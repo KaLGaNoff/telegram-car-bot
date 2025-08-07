@@ -3,7 +3,6 @@ import json
 import time
 import logging
 import warnings
-import gspread
 from datetime import datetime, timedelta
 import pytz
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -14,7 +13,7 @@ from telegram.ext import (
 from gspread_formatting import CellFormat, TextFormat, Borders, format_cell_range
 import telegram
 from logging.handlers import TimedRotatingFileHandler
-from flask import Flask, Response
+from flask import Flask, request, Response
 import urllib.request
 
 # Придушення PTBUserWarning
@@ -55,8 +54,9 @@ OWNER_ID = 270380991
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
 SERVICE_ACCOUNT_JSON = os.getenv("SERVICE_ACCOUNT_JSON")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/webhook")
 
-if not all([TELEGRAM_TOKEN, GOOGLE_SHEET_ID, SERVICE_ACCOUNT_JSON]):
+if not all([TELEGRAM_TOKEN, GOOGLE_SHEET_ID, SERVICE_ACCOUNT_JSON, WEBHOOK_URL]):
     logger.error("Відсутні обов’язкові змінні оточення")
     raise ValueError("Відсутні обов’язкові змінні оточення")
 
@@ -66,6 +66,7 @@ try:
     logger.info(f"Telegram API check: {response.getcode()} OK")
 except Exception as e:
     logger.error(f"Помилка перевірки Telegram API: {e}")
+    raise
 
 # Ініціалізація Google Sheets
 try:
@@ -108,6 +109,18 @@ def ping():
     except Exception as e:
         logger.error(f"Flask ping: Telegram API error: {e}")
         return "Bot is alive, but Telegram API failed", 200
+
+@flask_app.route('/webhook', methods=['POST'])
+async def webhook():
+    try:
+        logger.info(f"Отримано вебхук-запит о {datetime.now(pytz.timezone('Europe/Kiev')).strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
+        update = Update.de_json(request.get_json(force=True), telegram_app.bot)
+        await telegram_app.process_update(update)
+        logger.info("Вебхук оброблено успішно")
+        return Response(status=200)
+    except Exception as e:
+        logger.error(f"Помилка обробки вебхука: {e}", exc_info=True)
+        return Response(status=500)
 
 @flask_app.route('/favicon.ico')
 @flask_app.route('/favicon.png')
@@ -563,7 +576,7 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         start_time = time.time()
         sheet.append_row(row)
-        row_index = len(sheet_cache) + 1
+        row_index = len(sheet百万
         cell_format = CellFormat(
             horizontalAlignment='CENTER',
             textFormat=TextFormat(bold=False),
@@ -599,27 +612,43 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Користувач {user_id} скасував операцію")
     return ConversationHandler.END
 
+# Ініціалізація Telegram бота
+telegram_app = None
+
+async def init_telegram_app():
+    global telegram_app
+    try:
+        telegram_app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+        logger.info("Telegram Application ініціалізовано")
+
+        conv_handler = ConversationHandler(
+            entry_points=[CallbackQueryHandler(handle_button)],
+            states={
+                WAITING_FOR_ODOMETER: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_odometer)],
+                WAITING_FOR_DISTRIBUTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_distribution)],
+                CONFIRMATION: [CallbackQueryHandler(handle_confirmation)]
+            },
+            fallbacks=[CallbackQueryHandler(cancel, pattern="^cancel$")],
+            per_user=True,
+            per_chat=True,
+            per_message=False
+        )
+
+        telegram_app.add_handler(CommandHandler("start", start))
+        telegram_app.add_handler(CommandHandler("stats", stats))
+        telegram_app.add_handler(conv_handler)
+        logger.info("Обробники команд додано")
+
+        # Налаштування вебхука
+        await telegram_app.bot.set_webhook(url=WEBHOOK_URL)
+        logger.info(f"Вебхук встановлено: {WEBHOOK_URL}")
+    except Exception as e:
+        logger.error(f"Помилка ініціалізації Telegram Application: {e}")
+        raise
+
 if __name__ == "__main__":
     logger.info(f"🚀 Бот запущено о {datetime.now(pytz.timezone('Europe/Kiev')).strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
-    telegram_app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    logger.info("Application успішно ініціалізовано")
-
-    conv_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(handle_button)],
-        states={
-            WAITING_FOR_ODOMETER: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_odometer)],
-            WAITING_FOR_DISTRIBUTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_distribution)],
-            CONFIRMATION: [CallbackQueryHandler(handle_confirmation)]
-        },
-        fallbacks=[CallbackQueryHandler(cancel, pattern="^cancel$")],
-        per_user=True,
-        per_chat=True,
-        per_message=False
-    )
-
-    telegram_app.add_handler(CommandHandler("start", start))
-    telegram_app.add_handler(CommandHandler("stats", stats))
-    telegram_app.add_handler(conv_handler)
-    telegram_app.run_polling()
+    import asyncio
+    asyncio.run(init_telegram_app())
 
 app = flask_app
