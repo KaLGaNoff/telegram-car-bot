@@ -576,7 +576,7 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         start_time = time.time()
         sheet.append_row(row)
-        row_index = len(sheet百万
+        row_index = len(sheet_cache)
         cell_format = CellFormat(
             horizontalAlignment='CENTER',
             textFormat=TextFormat(bold=False),
