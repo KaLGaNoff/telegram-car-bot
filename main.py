@@ -10,11 +10,13 @@ from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler,
     filters, ConversationHandler, ContextTypes
 )
+import gspread
 from gspread_formatting import CellFormat, TextFormat, Borders, format_cell_range
 import telegram
 from logging.handlers import TimedRotatingFileHandler
 from flask import Flask, request, Response
 import urllib.request
+import asyncio
 
 # Придушення PTBUserWarning
 warnings.filterwarnings("ignore", category=telegram.warnings.PTBUserWarning)
@@ -98,6 +100,42 @@ user_data_store = {}
 
 # Flask сервер
 flask_app = Flask(__name__)
+telegram_app = None
+
+async def init_telegram_app():
+    global telegram_app
+    try:
+        telegram_app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+        logger.info("Telegram Application ініціалізовано")
+
+        conv_handler = ConversationHandler(
+            entry_points=[CallbackQueryHandler(handle_button)],
+            states={
+                WAITING_FOR_ODOMETER: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_odometer)],
+                WAITING_FOR_DISTRIBUTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_distribution)],
+                CONFIRMATION: [CallbackQueryHandler(handle_confirmation)]
+            },
+            fallbacks=[CallbackQueryHandler(cancel, pattern="^cancel$")],
+            per_user=True,
+            per_chat=True,
+            per_message=False
+        )
+
+        telegram_app.add_handler(CommandHandler("start", start))
+        telegram_app.add_handler(CommandHandler("stats", stats))
+        telegram_app.add_handler(conv_handler)
+        logger.info("Обробники команд додано")
+
+        # Налаштування вебхука
+        try:
+            await telegram_app.bot.set_webhook(url=WEBHOOK_URL)
+            logger.info(f"Вебхук успішно встановлено: {WEBHOOK_URL}")
+        except Exception as e:
+            logger.error(f"Помилка встановлення вебхука: {e}")
+            raise
+    except Exception as e:
+        logger.error(f"Помилка ініціалізації Telegram Application: {e}")
+        raise
 
 @flask_app.route('/')
 def ping():
@@ -114,6 +152,9 @@ def ping():
 async def webhook():
     try:
         logger.info(f"Отримано вебхук-запит о {datetime.now(pytz.timezone('Europe/Kiev')).strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
+        if telegram_app is None:
+            logger.error("Telegram Application не ініціалізовано")
+            return Response(status=500)
         update = Update.de_json(request.get_json(force=True), telegram_app.bot)
         await telegram_app.process_update(update)
         logger.info("Вебхук оброблено успішно")
@@ -612,43 +653,16 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Користувач {user_id} скасував операцію")
     return ConversationHandler.END
 
-# Ініціалізація Telegram бота
-telegram_app = None
-
-async def init_telegram_app():
-    global telegram_app
-    try:
-        telegram_app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-        logger.info("Telegram Application ініціалізовано")
-
-        conv_handler = ConversationHandler(
-            entry_points=[CallbackQueryHandler(handle_button)],
-            states={
-                WAITING_FOR_ODOMETER: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_odometer)],
-                WAITING_FOR_DISTRIBUTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_distribution)],
-                CONFIRMATION: [CallbackQueryHandler(handle_confirmation)]
-            },
-            fallbacks=[CallbackQueryHandler(cancel, pattern="^cancel$")],
-            per_user=True,
-            per_chat=True,
-            per_message=False
-        )
-
-        telegram_app.add_handler(CommandHandler("start", start))
-        telegram_app.add_handler(CommandHandler("stats", stats))
-        telegram_app.add_handler(conv_handler)
-        logger.info("Обробники команд додано")
-
-        # Налаштування вебхука
-        await telegram_app.bot.set_webhook(url=WEBHOOK_URL)
-        logger.info(f"Вебхук встановлено: {WEBHOOK_URL}")
-    except Exception as e:
-        logger.error(f"Помилка ініціалізації Telegram Application: {e}")
-        raise
+# Ініціалізація Telegram Application при старті Flask
+@flask_app.before_first_request
+def initialize_bot():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(init_telegram_app())
+    logger.info("Ініціалізація бота завершена")
 
 if __name__ == "__main__":
     logger.info(f"🚀 Бот запущено о {datetime.now(pytz.timezone('Europe/Kiev')).strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
-    import asyncio
-    asyncio.run(init_telegram_app())
+    flask_app.run()
 
 app = flask_app
