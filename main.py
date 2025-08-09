@@ -149,14 +149,14 @@ def ping():
         return "Bot is alive, but Telegram API failed", 200
 
 @flask_app.route('/webhook', methods=['POST'])
-async def webhook():
+def webhook():
     try:
         logger.info(f"Отримано вебхук-запит о {datetime.now(pytz.timezone('Europe/Kiev')).strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
         if telegram_app is None:
             logger.error("Telegram Application не ініціалізовано")
             return Response(status=500)
         update = Update.de_json(request.get_json(force=True), telegram_app.bot)
-        await telegram_app.process_update(update)
+        telegram_app.process_update(update)
         logger.info("Вебхук оброблено успішно")
         return Response(status=200)
     except Exception as e:
@@ -653,16 +653,11 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Користувач {user_id} скасував операцію")
     return ConversationHandler.END
 
-# Ініціалізація Telegram Application при старті Flask
-@flask_app.before_first_request
-def initialize_bot():
+if __name__ == "__main__":
+    logger.info(f"🚀 Бот запущено о {datetime.now(pytz.timezone('Europe/Kiev')).strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(init_telegram_app())
-    logger.info("Ініціалізація бота завершена")
-
-if __name__ == "__main__":
-    logger.info(f"🚀 Бот запущено о {datetime.now(pytz.timezone('Europe/Kiev')).strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
     flask_app.run()
 
 app = flask_app
