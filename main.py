@@ -665,6 +665,8 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Користувач {user_id} скасував операцію")
     return ConversationHandler.END
 
+from asgiref.wsgi import WsgiToAsgi
+
 # Ініціалізація Telegram Application перед запуском сервера
 async def main():
     try:
@@ -674,10 +676,10 @@ async def main():
         logger.error(f"Не вдалося ініціалізувати бота: {e}", exc_info=True)
         raise
 
-app = flask_app
+# Конвертація Flask WSGI-додатка в ASGI
+app = WsgiToAsgi(flask_app)
 
 if __name__ == "__main__":
     logger.info(f"🚀 Бот запущено о {datetime.now(pytz.timezone('Europe/Kiev')).strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
     import uvicorn
-    # Запускаємо ініціалізацію та сервер асинхронно
     uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)), loop="asyncio")
