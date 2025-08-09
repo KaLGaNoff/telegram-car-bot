@@ -26,7 +26,7 @@ warnings.filterwarnings("ignore", category=telegram.warnings.PTBUserWarning)
 
 # Налаштування логування
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)  # Змінили на DEBUG для детальнішого логування
 
 # Фільтр для ігнорування favicon-запитів
 class FaviconFilter(logging.Filter):
@@ -70,7 +70,7 @@ try:
     response = urllib.request.urlopen(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getMe")
     logger.info(f"Telegram API check: {response.getcode()} OK")
 except Exception as e:
-    logger.error(f"Помилка перевірки Telegram API: {e}")
+    logger.error(f"Помилка перевірки Telegram API: {e}", exc_info=True)
     raise
 
 # Ініціалізація Google Sheets
@@ -79,7 +79,7 @@ try:
     client = gspread.service_account_from_dict(credentials)
     sheet = client.open_by_key(GOOGLE_SHEET_ID).sheet1
 except Exception as e:
-    logger.error(f"Помилка ініціалізації Google Sheets: {e}")
+    logger.error(f"Помилка ініціалізації Google Sheets: {e}", exc_info=True)
     raise
 
 # Кешування даних таблиці
@@ -92,7 +92,7 @@ def update_sheet_cache():
         sheet_cache = sheet.get_all_values()
         logger.info(f"Кеш таблиці оновлено за {time.time() - start_time:.3f} сек")
     except Exception as e:
-        logger.error(f"Помилка оновлення кешу: {e}")
+        logger.error(f"Помилка оновлення кешу: {e}", exc_info=True)
         sheet_cache = []
 
 update_sheet_cache()
