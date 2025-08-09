@@ -142,11 +142,6 @@ async def init_telegram_app():
         logger.error(f"Помилка ініціалізації Telegram Application: {e}", exc_info=True)
         raise
 
-@flask_app.before_first_request
-async def before_first_request():
-    if telegram_app is None:
-        await init_telegram_app()
-
 @flask_app.route('/')
 async def ping():
     logger.debug(f"Отримано пінг на / о {datetime.now(pytz.timezone('Europe/Kiev')).strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
@@ -671,10 +666,17 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Користувач {user_id} скасував операцію")
     return ConversationHandler.END
 
+async def startup():
+    if telegram_app is None:
+        await init_telegram_app()
+
 # Конвертація Flask WSGI-додатка в ASGI
 app = WsgiToAsgi(flask_app)
 
 if __name__ == "__main__":
     logger.info(f"🚀 Бот запущено о {datetime.now(pytz.timezone('Europe/Kiev')).strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
+    # Ініціалізація telegram_app перед запуском uvicorn
+    loop = asyncio.get_event_loop()
+    loop.create_task(startup())
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)), loop="asyncio")
