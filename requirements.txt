@@ -5,4 +5,4 @@ google-auth==2.35.0
 pytz==2025.2
 flask==3.0.3
 gunicorn==23.0.0
-setuptools==80.9.0
+setuptools<81
