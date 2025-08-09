@@ -142,7 +142,7 @@ async def init_telegram_app():
         raise
 
 @flask_app.route('/')
-def ping():
+async def ping():
     logger.debug(f"Отримано пінг на / о {datetime.now(pytz.timezone('Europe/Kiev')).strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
     try:
         response = urllib.request.urlopen(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getMe")
@@ -153,7 +153,7 @@ def ping():
         return "Bot is alive, but Telegram API failed", 200
 
 @flask_app.route('/webhook', methods=['POST'])
-def webhook():
+async def webhook():
     try:
         logger.info(f"Отримано вебхук-запит о {datetime.now(pytz.timezone('Europe/Kiev')).strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
         if telegram_app is None:
@@ -168,7 +168,7 @@ def webhook():
         if update is None:
             logger.error("Не вдалося десеріалізувати оновлення")
             return Response("Failed to deserialize update", status=400)
-        telegram_app.process_update(update)
+        await telegram_app.process_update(update)
         logger.info("Вебхук оброблено успішно")
         return Response(status=200)
     except Exception as e:
@@ -177,7 +177,7 @@ def webhook():
 
 @flask_app.route('/favicon.ico')
 @flask_app.route('/favicon.png')
-def favicon():
+async def favicon():
     return Response(status=204)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -665,14 +665,16 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Користувач {user_id} скасував операцію")
     return ConversationHandler.END
 
-if __name__ == "__main__":
-    logger.info(f"🚀 Бот запущено о {datetime.now(pytz.timezone('Europe/Kiev')).strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
-    loop = asyncio.get_event_loop()
-    try:
-        loop.run_until_complete(init_telegram_app())
-    except Exception as e:
-        logger.error(f"Не вдалося ініціалізувати бота: {e}", exc_info=True)
-        raise
-    flask_app.run()
+# Ініціалізація Telegram Application перед запуском сервера
+loop = asyncio.get_event_loop()
+try:
+    loop.run_until_complete(init_telegram_app())
+except Exception as e:
+    logger.error(f"Не вдалося ініціалізувати бота: {e}", exc_info=True)
+    raise
 
 app = flask_app
+
+if __name__ == "__main__":
+    logger.info(f"🚀 Бот запущено о {datetime.now(pytz.timezone('Europe/Kiev')).strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
+    flask_app.run()
