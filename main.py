@@ -126,6 +126,10 @@ async def init_telegram_app():
         telegram_app.add_handler(conv_handler)
         logger.info("Обробники команд додано")
 
+        # Перевірка токена
+        bot_info = await telegram_app.bot.get_me()
+        logger.info(f"Бот успішно ініціалізовано: {bot_info.username}")
+
         # Налаштування вебхука
         try:
             await telegram_app.bot.set_webhook(url=WEBHOOK_URL)
@@ -134,7 +138,7 @@ async def init_telegram_app():
             logger.error(f"Помилка встановлення вебхука: {e}")
             raise
     except Exception as e:
-        logger.error(f"Помилка ініціалізації Telegram Application: {e}")
+        logger.error(f"Помилка ініціалізації Telegram Application: {e}", exc_info=True)
         raise
 
 @flask_app.route('/')
@@ -154,17 +158,22 @@ def webhook():
         logger.info(f"Отримано вебхук-запит о {datetime.now(pytz.timezone('Europe/Kiev')).strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
         if telegram_app is None:
             logger.error("Telegram Application не ініціалізовано")
-            return Response(status=500)
-        update = Update.de_json(request.get_json(force=True), telegram_app.bot)
+            return Response("Telegram Application not initialized", status=500)
+        json_data = request.get_json(force=True)
+        if not json_data:
+            logger.error("JSON дані не отримані")
+            return Response("No JSON data received", status=400)
+        logger.debug(f"JSON дані: {json_data}")
+        update = Update.de_json(json_data, telegram_app.bot)
         if update is None:
             logger.error("Не вдалося десеріалізувати оновлення")
-            return Response(status=400)
+            return Response("Failed to deserialize update", status=400)
         telegram_app.process_update(update)
         logger.info("Вебхук оброблено успішно")
         return Response(status=200)
     except Exception as e:
-        logger.error(f"Помилка обробки вебхука: {e}", exc_info=True)
-        return Response(status=500)
+        logger.error(f"Помилка обробки вебхука: {str(e)}", exc_info=True)
+        return Response(f"Webhook error: {str(e)}", status=500)
 
 @flask_app.route('/favicon.ico')
 @flask_app.route('/favicon.png')
@@ -659,7 +668,11 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 if __name__ == "__main__":
     logger.info(f"🚀 Бот запущено о {datetime.now(pytz.timezone('Europe/Kiev')).strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
     loop = asyncio.get_event_loop()
-    loop.run_until_complete(init_telegram_app())
+    try:
+        loop.run_until_complete(init_telegram_app())
+    except Exception as e:
+        logger.error(f"Не вдалося ініціалізувати бота: {e}", exc_info=True)
+        raise
     flask_app.run()
 
 app = flask_app
