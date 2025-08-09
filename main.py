@@ -1,144 +1,68 @@
 import os
-import json
-import gspread
-from datetime import datetime
+import logging
 from fastapi import FastAPI, Request
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler, MessageHandler,
-    filters, ConversationHandler, ContextTypes
-)
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler
+
+import gspread
+from google.oauth2.service_account import Credentials
 from gspread_formatting import CellFormat, TextFormat, Borders, format_cell_range
-import asyncio
 
-# === Налаштування ===
-OWNER_ID = 270380991
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
-SERVICE_ACCOUNT_JSON = os.getenv("SERVICE_ACCOUNT_JSON")
+# ====== Логування ======
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
 
-# Google Sheets
-credentials = json.loads(SERVICE_ACCOUNT_JSON)
-client = gspread.service_account_from_dict(credentials)
-sheet = client.open_by_key(GOOGLE_SHEET_ID).sheet1
+# ====== ENV ======
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # наприклад, https://your-app.onrender.com/webhook
+PORT = int(os.getenv("PORT", 10000))
 
-# Стан розмови
-WAITING_FOR_ODOMETER, WAITING_FOR_DISTRIBUTION, CONFIRMATION = range(3)
-user_data_store = {}
+if not BOT_TOKEN:
+    raise RuntimeError("❌ BOT_TOKEN не знайдено у змінних середовища")
+if not WEBHOOK_URL:
+    raise RuntimeError("❌ WEBHOOK_URL не знайдено у змінних середовища")
 
-# === Функції бота ===
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("❌ У тебе немає доступу до цього бота.")
-        return
+# ====== Ініціалізація бота одразу ======
+application = Application.builder().token(BOT_TOKEN).build()
 
-    keyboard = [
-        [InlineKeyboardButton("➕ Додати пробіг", callback_data="add")],
-        [InlineKeyboardButton("🗑 Видалити останній запис", callback_data="delete")],
-        [InlineKeyboardButton("📊 Звіт", callback_data="report")],
-        [InlineKeyboardButton("🧾 Останній запис", callback_data="last")],
-        [InlineKeyboardButton("♻️ Скинути", callback_data="reset")],
-        [InlineKeyboardButton("ℹ️ Допомога", callback_data="help")]
-    ]
-    await update.message.reply_text("👋 Обери дію:", reply_markup=InlineKeyboardMarkup(keyboard))
+# ====== Google Sheets ======
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+creds = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
+client = gspread.authorize(creds)
+sheet = client.open("Назва_Твоєї_Таблиці").sheet1
 
-async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    await update.callback_query.edit_message_text("🔧 Обробка кнопки... (заглушка)")
+# ====== Функції для Telegram ======
+async def start(update: Update, context):
+    await update.message.reply_text("✅ Бот працює!")
 
-async def handle_odometer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📍 Введення одометра (заглушка)")
-    return WAITING_FOR_DISTRIBUTION
+# Приклад обробки повідомлень
+async def echo(update: Update, context):
+    await update.message.reply_text(f"Ви написали: {update.message.text}")
 
-async def handle_distribution(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📍 Введення розподілу (заглушка)")
-    return CONFIRMATION
+# ====== Додаємо хендлери ======
+application.add_handler(CommandHandler("start", start))
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
 
-async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-
-    if query.data == "confirm_no":
-        user_data_store.pop(user_id, None)
-        await query.edit_message_text("❌ Скасовано.")
-        return ConversationHandler.END
-
-    data = user_data_store.pop(user_id, {})
-    if not data:
-        await query.edit_message_text("⚠️ Дані не знайдено.")
-        return ConversationHandler.END
-
-    today = datetime.now().strftime("%d.%m.%Y")
-    row = [
-        today,
-        str(data.get("odometer", "")),
-        str(data.get("diff", "")),
-        str(int(data.get("city_km", 0))),
-        str(data.get("city_exact", 0)).replace('.', ','),
-        str(data.get("city_rounded", 0)),
-        str(int(data.get("district_km", 0))),
-        str(data.get("district_exact", 0)).replace('.', ','),
-        str(data.get("district_rounded", 0)),
-        str(int(data.get("highway_km", 0))),
-        str(data.get("highway_exact", 0)).replace('.', ','),
-        str(data.get("highway_rounded", 0)),
-        str(data.get("total_exact", 0)).replace('.', ','),
-        str(data.get("total_rounded", 0))
-    ]
-    sheet.append_row(row)
-
-    row_index = len(sheet.get_all_values())
-    cell_format = CellFormat(
-        horizontalAlignment='CENTER',
-        textFormat=TextFormat(bold=False),
-        borders=Borders(
-            top={'style': 'SOLID'},
-            bottom={'style': 'SOLID'},
-            left={'style': 'SOLID'},
-            right={'style': 'SOLID'}
-        )
-    )
-    format_cell_range(sheet, f"A{row_index}:N{row_index}", cell_format)
-
-    await query.edit_message_text("✅ Запис збережено.")
-    return ConversationHandler.END
-
-# === Ініціалізація FastAPI та Telegram Application ===
+# ====== FastAPI ======
 app = FastAPI()
-telegram_app = None
 
 @app.on_event("startup")
 async def startup_event():
-    global telegram_app
-    telegram_app = Application.builder().token(TELEGRAM_TOKEN).build()
+    logger.info("🚀 Стартуємо та ставимо вебхук...")
+    await application.bot.set_webhook(url=f"{WEBHOOK_URL}/webhook")
+    logger.info(f"🌐 Вебхук встановлено: {WEBHOOK_URL}/webhook")
 
-    conv_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(handle_button)],
-        states={
-            WAITING_FOR_ODOMETER: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_odometer)],
-            WAITING_FOR_DISTRIBUTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_distribution)],
-            CONFIRMATION: [CallbackQueryHandler(handle_confirmation)]
-        },
-        fallbacks=[]
-    )
-
-    telegram_app.add_handler(CommandHandler("start", start))
-    telegram_app.add_handler(conv_handler)
-
-    # Ставимо вебхук
-    webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/webhook"
-    await telegram_app.bot.set_webhook(webhook_url)
+@app.post("/webhook")
+async def telegram_webhook(req: Request):
+    data = await req.json()
+    update = Update.de_json(data, application.bot)
+    await application.process_update(update)
+    return {"status": "ok"}
 
 @app.get("/")
 async def root():
     return {"status": "Bot is running"}
 
-@app.post("/webhook")
-async def webhook(request: Request):
-    if telegram_app is None:
-        return {"error": "Telegram Application не ініціалізовано"}
-    data = await request.json()
-    update = Update.de_json(data, telegram_app.bot)
-    await telegram_app.process_update(update)
-    return {"ok": True}
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=PORT)
