@@ -156,6 +156,9 @@ def webhook():
             logger.error("Telegram Application не ініціалізовано")
             return Response(status=500)
         update = Update.de_json(request.get_json(force=True), telegram_app.bot)
+        if update is None:
+            logger.error("Не вдалося десеріалізувати оновлення")
+            return Response(status=400)
         telegram_app.process_update(update)
         logger.info("Вебхук оброблено успішно")
         return Response(status=200)
@@ -655,8 +658,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 if __name__ == "__main__":
     logger.info(f"🚀 Бот запущено о {datetime.now(pytz.timezone('Europe/Kiev')).strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    loop = asyncio.get_event_loop()
     loop.run_until_complete(init_telegram_app())
     flask_app.run()
 
