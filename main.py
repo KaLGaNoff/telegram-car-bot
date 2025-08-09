@@ -106,10 +106,13 @@ telegram_app = None
 
 async def init_telegram_app():
     global telegram_app
+    logger.info("Починаємо ініціалізацію Telegram Application")
     try:
+        logger.debug("Створюємо ApplicationBuilder")
         telegram_app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-        logger.info("Telegram Application ініціалізовано")
+        logger.info("ApplicationBuilder успішно створено")
 
+        logger.debug("Додаємо обробники команд")
         conv_handler = ConversationHandler(
             entry_points=[CallbackQueryHandler(handle_button)],
             states={
@@ -129,18 +132,21 @@ async def init_telegram_app():
         logger.info("Обробники команд додано")
 
         # Перевірка токена
+        logger.debug("Перевіряємо токен через get_me")
         bot_info = await telegram_app.bot.get_me()
         logger.info(f"Бот успішно ініціалізовано: {bot_info.username}")
 
         # Налаштування вебхука
+        logger.debug(f"Встановлюємо вебхук: {WEBHOOK_URL}")
         try:
             await telegram_app.bot.set_webhook(url=WEBHOOK_URL)
             logger.info(f"Вебхук успішно встановлено: {WEBHOOK_URL}")
         except Exception as e:
-            logger.error(f"Помилка встановлення вебхука: {e}")
+            logger.error(f"Помилка встановлення вебхука: {e}", exc_info=True)
             raise
     except Exception as e:
-        logger.error(f"Помилка ініціалізації Telegram Application: {e}", exc_info=True)
+        logger.error(f"Критична помилка ініціалізації Telegram Application: {e}", exc_info=True)
+        telegram_app = None
         raise
 
 # ASGI-додаток
