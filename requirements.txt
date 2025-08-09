@@ -5,4 +5,5 @@ google-auth==2.35.0
 pytz==2025.2
 flask[async]==3.0.3
 uvicorn==0.32.0
+asgiref==3.9.1
 setuptools<81
