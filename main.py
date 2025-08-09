@@ -666,16 +666,18 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 # Ініціалізація Telegram Application перед запуском сервера
-loop = asyncio.get_event_loop()
-try:
-    loop.run_until_complete(init_telegram_app())
-except Exception as e:
-    logger.error(f"Не вдалося ініціалізувати бота: {e}", exc_info=True)
-    raise
+async def main():
+    try:
+        await init_telegram_app()
+        logger.info("Бот готовий до запуску")
+    except Exception as e:
+        logger.error(f"Не вдалося ініціалізувати бота: {e}", exc_info=True)
+        raise
 
 app = flask_app
 
 if __name__ == "__main__":
     logger.info(f"🚀 Бот запущено о {datetime.now(pytz.timezone('Europe/Kiev')).strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
+    # Запускаємо ініціалізацію та сервер асинхронно
+    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)), loop="asyncio")
