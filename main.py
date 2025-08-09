@@ -142,6 +142,11 @@ async def init_telegram_app():
         logger.error(f"Помилка ініціалізації Telegram Application: {e}", exc_info=True)
         raise
 
+@flask_app.before_first_request
+async def before_first_request():
+    if telegram_app is None:
+        await init_telegram_app()
+
 @flask_app.route('/')
 async def ping():
     logger.debug(f"Отримано пінг на / о {datetime.now(pytz.timezone('Europe/Kiev')).strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
@@ -665,14 +670,6 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text("❌ *Операцію скасовано.*", parse_mode="Markdown")
     logger.info(f"Користувач {user_id} скасував операцію")
     return ConversationHandler.END
-
-# Ініціалізація Telegram Application перед запуском сервера
-loop = asyncio.get_event_loop()
-try:
-    loop.run_until_complete(init_telegram_app())
-except Exception as e:
-    logger.error(f"Не вдалося ініціалізувати бота: {e}", exc_info=True)
-    raise
 
 # Конвертація Flask WSGI-додатка в ASGI
 app = WsgiToAsgi(flask_app)
