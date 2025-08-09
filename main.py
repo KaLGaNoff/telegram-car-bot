@@ -14,10 +14,12 @@ import gspread
 from gspread_formatting import CellFormat, TextFormat, Borders, format_cell_range
 import telegram
 from logging.handlers import TimedRotatingFileHandler
-from flask import Flask, request, Response
-import urllib.request
 import asyncio
-from asgiref.wsgi import WsgiToAsgi
+import uvicorn
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import Response, PlainTextResponse
+import urllib.request
 
 # Придушення PTBUserWarning
 warnings.filterwarnings("ignore", category=telegram.warnings.PTBUserWarning)
@@ -99,8 +101,7 @@ update_sheet_cache()
 WAITING_FOR_ODOMETER, WAITING_FOR_DISTRIBUTION, CONFIRMATION = range(3)
 user_data_store = {}
 
-# Flask сервер
-flask_app = Flask(__name__)
+# Ініціалізація Telegram Application
 telegram_app = None
 
 async def init_telegram_app():
@@ -142,44 +143,47 @@ async def init_telegram_app():
         logger.error(f"Помилка ініціалізації Telegram Application: {e}", exc_info=True)
         raise
 
-@flask_app.route('/')
-async def ping():
+# ASGI-додаток
+app = Starlette()
+
+@app.route('/')
+async def ping(request: Request):
     logger.debug(f"Отримано пінг на / о {datetime.now(pytz.timezone('Europe/Kiev')).strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
     try:
         response = urllib.request.urlopen(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getMe")
-        logger.info(f"Flask ping: Telegram API responded with {response.getcode()}")
-        return "Bot is alive", 200
+        logger.info(f"Ping: Telegram API responded with {response.getcode()}")
+        return PlainTextResponse("Bot is alive", status_code=200)
     except Exception as e:
-        logger.error(f"Flask ping: Telegram API error: {e}")
-        return "Bot is alive, but Telegram API failed", 200
+        logger.error(f"Ping: Telegram API error: {e}")
+        return PlainTextResponse("Bot is alive, but Telegram API failed", status_code=200)
 
-@flask_app.route('/webhook', methods=['POST'])
-async def webhook():
+@app.route('/webhook', methods=['POST'])
+async def webhook(request: Request):
     try:
         logger.info(f"Отримано вебхук-запит о {datetime.now(pytz.timezone('Europe/Kiev')).strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
         if telegram_app is None:
             logger.error("Telegram Application не ініціалізовано")
-            return Response("Telegram Application not initialized", status=500)
-        json_data = await request.get_json(force=True)
+            return Response("Telegram Application not initialized", status_code=500)
+        json_data = await request.json()
         if not json_data:
             logger.error("JSON дані не отримані")
-            return Response("No JSON data received", status=400)
+            return Response("No JSON data received", status_code=400)
         logger.debug(f"JSON дані: {json_data}")
         update = Update.de_json(json_data, telegram_app.bot)
         if update is None:
             logger.error("Не вдалося десеріалізувати оновлення")
-            return Response("Failed to deserialize update", status=400)
+            return Response("Failed to deserialize update", status_code=400)
         await telegram_app.process_update(update)
         logger.info("Вебхук оброблено успішно")
-        return Response(status=200)
+        return Response(status_code=200)
     except Exception as e:
         logger.error(f"Помилка обробки вебхука: {str(e)}", exc_info=True)
-        return Response(f"Webhook error: {str(e)}", status=500)
+        return Response(f"Webhook error: {str(e)}", status_code=500)
 
-@flask_app.route('/favicon.ico')
-@flask_app.route('/favicon.png')
-async def favicon():
-    return Response(status=204)
+@app.route('/favicon.ico', methods=['GET'])
+@app.route('/favicon.png', methods=['GET'])
+async def favicon(request: Request):
+    return Response(status_code=204)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Отримано команду /start від користувача {update.effective_user.id} о {datetime.now(pytz.timezone('Europe/Kiev')).strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
@@ -666,17 +670,10 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Користувач {user_id} скасував операцію")
     return ConversationHandler.END
 
-async def startup():
-    if telegram_app is None:
-        await init_telegram_app()
-
-# Конвертація Flask WSGI-додатка в ASGI
-app = WsgiToAsgi(flask_app)
+async def main():
+    await init_telegram_app()
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)), loop="asyncio")
 
 if __name__ == "__main__":
     logger.info(f"🚀 Бот запущено о {datetime.now(pytz.timezone('Europe/Kiev')).strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
-    # Ініціалізація telegram_app перед запуском uvicorn
-    loop = asyncio.get_event_loop()
-    loop.create_task(startup())
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)), loop="asyncio")
+    asyncio.run(main())
