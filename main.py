@@ -1,35 +1,36 @@
 import os
 import json
-import gspread
 from datetime import datetime
+
+import gspread
+from gspread_formatting import CellFormat, TextFormat, Borders, format_cell_range
+
 from fastapi import FastAPI, Request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler,
-    MessageHandler, filters, ConversationHandler, ContextTypes
+    Application, CommandHandler, CallbackQueryHandler, MessageHandler,
+    filters, ConversationHandler, ContextTypes
 )
-from gspread_formatting import CellFormat, TextFormat, Borders, format_cell_range
 
-# === Змінні з середовища ===
+# ------------------- Налаштування -------------------
+OWNER_ID = 270380991
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
 SERVICE_ACCOUNT_JSON = os.getenv("SERVICE_ACCOUNT_JSON")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Додай у Render змінну середовища
 
-if not TELEGRAM_TOKEN or not GOOGLE_SHEET_ID or not SERVICE_ACCOUNT_JSON:
-    raise RuntimeError("❌ Не знайдено одну або кілька змінних середовища")
-
-OWNER_ID = 270380991
-
-# === Google Sheets підключення ===
+# ------------------- Google Sheets -------------------
 credentials = json.loads(SERVICE_ACCOUNT_JSON)
 client = gspread.service_account_from_dict(credentials)
 sheet = client.open_by_key(GOOGLE_SHEET_ID).sheet1
 
-# === Стан розмови ===
+# ------------------- Константи станів -------------------
 WAITING_FOR_ODOMETER, WAITING_FOR_DISTRIBUTION, CONFIRMATION = range(3)
+
+# ------------------- Зберігання даних -------------------
 user_data_store = {}
 
-# === Хендлери ===
+# ------------------- Хендлери -------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
         await update.message.reply_text("❌ У тебе немає доступу до цього бота.")
@@ -107,9 +108,7 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.edit_message_text("✅ Запис збережено.")
     return ConversationHandler.END
 
-
-# === Налаштування FastAPI + Telegram Webhook ===
-app = FastAPI()
+# ------------------- Створення Telegram додатку -------------------
 telegram_app = Application.builder().token(TELEGRAM_TOKEN).build()
 
 conv_handler = ConversationHandler(
@@ -125,10 +124,12 @@ conv_handler = ConversationHandler(
 telegram_app.add_handler(CommandHandler("start", start))
 telegram_app.add_handler(conv_handler)
 
-WEBHOOK_URL = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/webhook"
+# ------------------- FastAPI для Render -------------------
+app = FastAPI()
 
 @app.on_event("startup")
 async def on_startup():
+    await telegram_app.initialize()
     await telegram_app.bot.set_webhook(WEBHOOK_URL)
 
 @app.post("/webhook")
@@ -141,3 +142,8 @@ async def webhook(request: Request):
 @app.get("/")
 async def root():
     return {"status": "Bot is running"}
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    await telegram_app.shutdown()
+    await telegram_app.stop()
