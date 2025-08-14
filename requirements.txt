@@ -6,3 +6,4 @@ pytz==2025.2
 uvicorn==0.32.0
 fastapi==0.112.2
 setuptools<81
+
