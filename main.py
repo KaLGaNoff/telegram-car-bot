@@ -1,387 +1,605 @@
 import os
-import re
 import json
 import logging
-from datetime import datetime
+import asyncio
+from datetime import datetime, timedelta
+from typing import Dict, Any, Optional, Tuple, List
 
+import pytz
 import gspread
-from fastapi import FastAPI, Request
-from fastapi.responses import PlainTextResponse, JSONResponse
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler, MessageHandler,
-    filters, ConversationHandler, ContextTypes
-)
 from gspread_formatting import (
-    CellFormat, TextFormat, Borders, Border, Color, format_cell_range
+    cellFormat,
+    textFormat,
+    color,
+    format_cell_range,
+    borders,
+    Border,
+    NumberFormat,
 )
 
-# ---------------------- Налаштування логування ----------------------
+from starlette.applications import Starlette
+from starlette.responses import JSONResponse, PlainTextResponse
+from starlette.requests import Request
+
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardRemove,
+)
+from telegram.constants import ParseMode
+from telegram.ext import (
+    Application,
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ConversationHandler,
+    ContextTypes,
+    filters,
+)
+from telegram.error import BadRequest, TimedOut, NetworkError
+
+# ------------------------------------------------------------
+# ЛОГІНГ
+# ------------------------------------------------------------
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
+    level=LOG_LEVEL,
+    format="%(asctime)s - %(levelname)s - %(message)s",
 )
-log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
-# ---------------------- Константи/Secrets ----------------------
-OWNER_ID = 270380991
-
+# ------------------------------------------------------------
+# ENV
+# ------------------------------------------------------------
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
-SERVICE_ACCOUNT_JSON = os.getenv("SERVICE_ACCOUNT_JSON")
+SERVICE_ACCOUNT_JSON = os.getenv("SERVICE_ACCOUNT_JSON")  # JSON-рядок (не шлях!)
+RENDER_EXTERNAL_HOSTNAME = os.getenv("RENDER_EXTERNAL_HOSTNAME")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL") or (
+    f"https://{RENDER_EXTERNAL_HOSTNAME}/webhook" if RENDER_EXTERNAL_HOSTNAME else None
+)
 
-if not TELEGRAM_TOKEN:
-    raise RuntimeError("❌ TELEGRAM_TOKEN не знайдено у змінних середовища")
-if not GOOGLE_SHEET_ID:
-    raise RuntimeError("❌ GOOGLE_SHEET_ID не знайдено у змінних середовища")
-if not SERVICE_ACCOUNT_JSON:
-    raise RuntimeError("❌ SERVICE_ACCOUNT_JSON не знайдено у змінних середовища")
+# ------------------------------------------------------------
+# ТАЙМЗОНА / ДАТИ
+# ------------------------------------------------------------
+TZ = pytz.timezone("Europe/Kyiv")
 
-# ---------------------- Google Sheets ----------------------
-credentials = json.loads(SERVICE_ACCOUNT_JSON)
-client = gspread.service_account_from_dict(credentials)
-sheet = client.open_by_key(GOOGLE_SHEET_ID).sheet1
+def now_kyiv() -> datetime:
+    return datetime.now(TZ)
 
-# ---------------------- Стани діалогу ----------------------
-WAITING_FOR_ODOMETER, WAITING_FOR_DISTRIBUTION, CONFIRMATION = range(3)
+# ------------------------------------------------------------
+# GSHEET
+# ------------------------------------------------------------
+gc = None
+ws = None
 
-# Тимчасові дані користувача
-user_data_store: dict[int, dict] = {}
-
-# ---------------------- Допоміжні ----------------------
-def _int_str(x) -> str:
-    """Повертає ціле число як рядок без .0"""
-    return str(int(float(x)))
-
-def _is_number(s: str) -> bool:
-    s = s.strip().replace(",", ".")
+def init_gsheet() -> None:
+    global gc, ws
+    if not SERVICE_ACCOUNT_JSON or not GOOGLE_SHEET_ID:
+        raise RuntimeError("Не задані SERVICE_ACCOUNT_JSON або GOOGLE_SHEET_ID")
     try:
-        float(s)
-        return True
-    except ValueError:
-        return False
-
-def _format_new_row_style(row_index: int):
-    """Центрування та рамка для нового рядка"""
-    try:
-        fmt = CellFormat(
-            horizontalAlignment='CENTER',
-            textFormat=TextFormat(bold=False),
-            borders=Borders(
-                top=Border(style='SOLID', color=Color(0, 0, 0)),
-                bottom=Border(style='SOLID', color=Color(0, 0, 0)),
-                left=Border(style='SOLID', color=Color(0, 0, 0)),
-                right=Border(style='SOLID', color=Color(0, 0, 0)),
-            ),
-        )
-        # Стовпці A..N (14)
-        format_cell_range(sheet, f"A{row_index}:N{row_index}", fmt)
+        creds = json.loads(SERVICE_ACCOUNT_JSON)
     except Exception as e:
-        log.warning("Не вдалося застосувати формат до рядка %s: %s", row_index, e)
+        raise RuntimeError(f"SERVICE_ACCOUNT_JSON не валідний JSON: {e}")
+    gc = gspread.service_account_from_dict(creds)
+    sh = gc.open_by_key(GOOGLE_SHEET_ID)
+    ws = sh.sheet1
+    logger.info("Google Sheet підключено")
 
-def _nice_last_rows_text(rows: list[list[str]], limit: int = 5) -> str:
-    """Акуратний вивід останніх записів (без шапки, якщо вона є)"""
-    data = rows[:]
-    if data and data[0] and data[0][0].strip().lower() in ("дата", "date"):
-        data = data[1:]
-    if not data:
-        return "📊 Таблиця порожня."
+# ------------------------------------------------------------
+# СТАН / КОНСТАНТИ КОНВЕРСЕЙШЕНУ
+# ------------------------------------------------------------
+(
+    STATE_WAITING_ODOMETER,
+    STATE_WAITING_DISTRIBUTION,
+    STATE_WAITING_CONFIRMATION,
+) = range(3)
 
-    tail = data[-limit:]
-    lines = ["📊 *Останні записи:*\n"]
-    # Візьмемо перші 5 колонок для компактності: Дата | Одометр | Пробіг | Місто | Розхід місто
-    for r in tail:
-        d = (r[0] if len(r) > 0 else "")
-        odo = (r[1] if len(r) > 1 else "")
-        diff = (r[2] if len(r) > 2 else "")
-        city_km = (r[3] if len(r) > 3 else "")
-        city_l = (r[4] if len(r) > 4 else "")
-        lines.append(f" • {d} | {odo} | {diff} | {city_km} | {city_l}")
-    return "\n".join(lines)
+telegram_app: Optional[Application] = None
 
-def _build_menu_keyboard() -> InlineKeyboardMarkup:
-    keyboard = [
-        [InlineKeyboardButton("➕ Додати пробіг", callback_data="add")],
-        [InlineKeyboardButton("🗑 Видалити останній запис", callback_data="delete")],
-        [InlineKeyboardButton("🧾 Останній запис", callback_data="last")],
-        [InlineKeyboardButton("📊 Звіт (5 записів)", callback_data="report")],
-        [InlineKeyboardButton("♻️ Скинути", callback_data="reset")],
-        [InlineKeyboardButton("ℹ️ Допомога", callback_data="help")],
+# Тимчасові дані користувачів (на випадок рестартів — мінімум для поточної сесії)
+user_state: Dict[int, Dict[str, Any]] = {}
+
+# ------------------------------------------------------------
+# ДОП ОПЦІЇ/ТЕКСТИ
+# ------------------------------------------------------------
+BTN_ADD = "➕ Додати пробіг"
+BTN_LAST = "📄 Останній запис"
+BTN_REPORT = "📊 Звіт"
+BTN_HELP = "❓ Допомога"
+BTN_RESET = "♻️ Скинути"
+BTN_DELETE = "🗑 Видалити останній"
+
+def main_menu_keyboard() -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(BTN_ADD, callback_data="add"),
+            InlineKeyboardButton(BTN_LAST, callback_data="last"),
+        ],
+        [
+            InlineKeyboardButton(BTN_REPORT, callback_data="report"),
+            InlineKeyboardButton(BTN_HELP, callback_data="help"),
+        ],
+        [
+            InlineKeyboardButton(BTN_DELETE, callback_data="delete"),
+            InlineKeyboardButton(BTN_RESET, callback_data="reset"),
+        ],
     ]
-    return InlineKeyboardMarkup(keyboard)
+    return InlineKeyboardMarkup(rows)
 
-# ---------------------- Обробники бота ----------------------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("❌ У тебе немає доступу до цього бота.")
-        return
-    await update.message.reply_text("👋 Обери дію:", reply_markup=_build_menu_keyboard())
+# ------------------------------------------------------------
+# ДОПОМОЖНІ ФУНКЦІЇ ДЛЯ ТАБЛИЦІ
+# ------------------------------------------------------------
+def get_last_row_values() -> Optional[List[Any]]:
+    values = ws.get_all_values()
+    if len(values) <= 1:
+        return None
+    return values[-1]
 
-async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+def append_row_and_format(row: List[Any]) -> None:
+    """
+    Додає рядок у таблицю й застосовує форматування:
+    - межі по всіх клітинках
+    - центрування
+    - формат чисел де треба
+    """
+    ws.append_row(row, value_input_option="USER_ENTERED")
+    # індекс щойно доданого рядка
+    last_row_index = ws.row_count
+    # знайдемо реальний індекс останнього не-порожнього
+    values = ws.get_all_values()
+    last_row_index = len(values)
 
-    if query.from_user.id != OWNER_ID:
-        await query.edit_message_text("❌ У тебе немає доступу.")
-        return
+    rng = f"A{last_row_index}:N{last_row_index}"
+    fmt = cellFormat(
+        horizontalAlignment="CENTER",
+        verticalAlignment="MIDDLE",
+        textFormat=textFormat(bold=False),
+        borders=borders(
+            top=Border("SOLID"),
+            bottom=Border("SOLID"),
+            left=Border("SOLID"),
+            right=Border("SOLID"),
+        ),
+    )
+    try:
+        format_cell_range(ws, rng, fmt)
+    except Exception as e:
+        logger.warning(f"Не вдалося застосувати форматування для {rng}: {e}")
 
-    data = query.data
-    if data == "add":
-        await query.edit_message_text("Введи поточний одометр (число):")
-        return WAITING_FOR_ODOMETER
+# ------------------------------------------------------------
+# БІЗНЕС-ЛОГІКА
+# ------------------------------------------------------------
+def parse_int(text: str) -> Optional[int]:
+    try:
+        return int(text.strip().replace(" ", ""))
+    except Exception:
+        return None
 
-    elif data == "delete":
-        rows = sheet.get_all_values()
-        if rows and len(rows) >= 1:
-            sheet.delete_rows(len(rows))  # видаляємо останній рядок (шапку не чіпаємо, якщо є)
-            await query.edit_message_text("🗑 Останній запис видалено.")
-        else:
-            await query.edit_message_text("⚠️ Таблиця порожня.")
+def compute_distribution_diff(prev_odometer: int, new_odometer: int) -> int:
+    return max(0, new_odometer - prev_odometer)
 
-    elif data == "report":
-        rows = sheet.get_all_values()
-        await query.edit_message_text(_nice_last_rows_text(rows), parse_mode="Markdown")
+def build_distribution_text(diff: int) -> str:
+    return (
+        "Розподіли кілометраж (місто/округ/траса).\n"
+        f"Загальний пробіг за період: <b>{diff} км</b>.\n"
+        "Надішли у форматі: <code>місто околиця траса</code>, наприклад: <code>120 30 50</code>"
+    )
 
-    elif data == "last":
-        rows = sheet.get_all_values()
-        if not rows or len(rows) <= 1:
-            await query.edit_message_text("🧾 Останнього запису немає.")
-            return
-        # Якщо є шапка, беремо передостанній індекс як останній даний рядок
-        body = rows[1:] if (rows and rows[0] and rows[0][0].strip().lower() in ("дата", "date")) else rows
-        last = body[-1] if body else []
-        # Розкладаємо красиво
-        text = (
-            "🧾 *Останній запис:*\n"
-            f"• Дата: {last[0] if len(last)>0 else ''}\n"
-            f"• Одометр: {last[1] if len(last)>1 else ''}\n"
-            f"• Пробіг: {last[2] if len(last)>2 else ''} км\n"
-            f"• Місто: {last[3] if len(last)>3 else ''} км → {last[4] if len(last)>4 else ''} л (≈ {last[5] if len(last)>5 else ''})\n"
-            f"• Район: {last[6] if len(last)>6 else ''} км → {last[7] if len(last)>7 else ''} л (≈ {last[8] if len(last)>8 else ''})\n"
-            f"• Траса: {last[9] if len(last)>9 else ''} км → {last[10] if len(last)>10 else ''} л (≈ {last[11] if len(last)>11 else ''})\n"
-            f"• Разом: {last[12] if len(last)>12 else ''} л (≈ {last[13] if len(last)>13 else ''})"
-        )
-        await query.edit_message_text(text, parse_mode="Markdown")
+def split_distribution(text: str) -> Optional[Tuple[int, int, int]]:
+    parts = text.replace(",", " ").split()
+    if len(parts) != 3:
+        return None
+    nums = []
+    for p in parts:
+        try:
+            nums.append(int(p))
+        except Exception:
+            return None
+    return tuple(nums)  # type: ignore
 
-    elif data == "reset":
-        user_data_store.pop(query.from_user.id, None)
-        await query.edit_message_text("♻️ Стан скинуто.", reply_markup=_build_menu_keyboard())
+def get_prev_odometer() -> int:
+    last = get_last_row_values()
+    if not last:
+        return 0
+    try:
+        return int(last[1])  # другий стовпець — одометр
+    except Exception:
+        return 0
 
-    elif data == "help":
-        await query.edit_message_text(
-            "ℹ️ Натисни *«Додати пробіг»* і дотримуйся інструкцій.\n"
-            "• Одометр — лише число\n"
-            "• Розподіл приклад: `місто 50 район 30 траса 20`\n"
-            "• Розподіл має дорівнювати пробігу за період\n",
-            parse_mode="Markdown"
-        )
+def render_last_text() -> str:
+    last = get_last_row_values()
+    if not last:
+        return "Поки немає записів."
+    # Підлаштуємо під вашу структуру колонок (A..N)
+    (
+        date,
+        odometer,
+        diff,
+        city_km,
+        city_exact,
+        city_rounded,
+        district_km,
+        district_exact,
+        district_rounded,
+        highway_km,
+        highway_exact,
+        highway_rounded,
+        total_exact,
+        total_rounded,
+        *rest,
+    ) = (last + [""] * 14)[:14]
+    return (
+        f"<b>Дата:</b> {date}\n"
+        f"<b>Одометр:</b> {odometer}\n"
+        f"<b>Пробіг:</b> {diff} км\n"
+        f"<b>Місто:</b> {city_km} (≈ {city_rounded})\n"
+        f"<b>Округ:</b> {district_km} (≈ {district_rounded})\n"
+        f"<b>Траса:</b> {highway_km} (≈ {highway_rounded})\n"
+        f"<b>Разом (точно/≈):</b> {total_exact} / {total_rounded}"
+    )
 
-# Крок 1 — Введення одометра
-async def handle_odometer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    if not _is_number(text):
-        await update.message.reply_text("❗️ Введи число, напр. `53200`", parse_mode="Markdown")
-        return WAITING_FOR_ODOMETER
+# ------------------------------------------------------------
+# HANDLERS
+# ------------------------------------------------------------
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.effective_message.reply_text(
+        "Вітаю! Оберіть дію нижче.",
+        reply_markup=main_menu_keyboard(),
+    )
 
-    odometer = int(float(text.replace(",", ".")))
-    rows = sheet.get_all_values()
-
-    if len(rows) >= 2:
-        prev_odo = int(float(rows[-1][1]))
+async def on_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = (
+        "Команди:\n"
+        f"{BTN_ADD} — додати новий запис\n"
+        f"{BTN_LAST} — показати останній запис\n"
+        f"{BTN_REPORT} — короткий звіт за місяць\n"
+        f"{BTN_DELETE} — видалити останній запис\n"
+        f"{BTN_RESET} — скинути поточний ввід\n\n"
+        "Усі дії доступні через кнопки."
+    )
+    if update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.edit_message_text(text, reply_markup=main_menu_keyboard(), parse_mode=ParseMode.HTML)
     else:
-        prev_odo = 0
+        await update.effective_message.reply_text(text, reply_markup=main_menu_keyboard(), parse_mode=ParseMode.HTML)
 
-    diff = odometer - prev_odo
-    if diff <= 0:
-        await update.message.reply_text("❗️ Одометр має бути більший за попередній.")
-        return WAITING_FOR_ODOMETER
+async def on_reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    uid = update.effective_user.id
+    user_state.pop(uid, None)
+    text = "Скинуто. Починаймо спочатку."
+    if update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.edit_message_text(text, reply_markup=main_menu_keyboard())
+    else:
+        await update.effective_message.reply_text(text, reply_markup=main_menu_keyboard())
 
-    user_data_store[update.effective_user.id] = {"odometer": odometer, "diff": diff}
+async def on_last(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = render_last_text()
+    if update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.edit_message_text(text, reply_markup=main_menu_keyboard(), parse_mode=ParseMode.HTML)
+    else:
+        await update.effective_message.reply_text(text, reply_markup=main_menu_keyboard(), parse_mode=ParseMode.HTML)
 
-    await update.message.reply_text(
-        f"📏 Попередній одометр: {prev_odo}\n"
-        f"📍 Поточний одометр: {odometer}\n"
-        f"🔄 Пробіг за період: {diff} км\n\n"
-        "🛣 Введи розподіл пробігу (наприклад: `місто 50 район 30 траса 6`):",
-        parse_mode="Markdown"
-    )
-    return WAITING_FOR_DISTRIBUTION
-
-# Крок 2 — Введення розподілу
-async def handle_distribution(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.lower()
-    user_id = update.effective_user.id
-    data = user_data_store.get(user_id, {})
-
-    if not data:
-        await update.message.reply_text("⚠️ Дані загублено. Почни знову.")
-        return ConversationHandler.END
-
-    # Шукаємо цілі числа після ключових слів (місто|район|траса)
-    city_km = district_km = highway_km = 0
-    for name, value in re.findall(r"(місто|район|трас[аиі])\s+(\d+)", text, flags=re.IGNORECASE):
-        if name.startswith("міст"):
-            city_km = int(value)
-        elif name.startswith("район"):
-            district_km = int(value)
+async def on_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # Зітремо останній рядок — дуже обережно, у вас може бути інша логіка архівації
+    try:
+        values = ws.get_all_values()
+        if len(values) <= 1:
+            text = "Немає що видаляти."
         else:
-            highway_km = int(value)
+            ws.delete_rows(len(values))
+            text = "Останній запис видалено."
+    except Exception as e:
+        logger.exception(e)
+        text = f"Помилка видалення: {e}"
 
-    total_entered = city_km + district_km + highway_km
-    if total_entered != data["diff"]:
-        await update.message.reply_text(
-            f"⚠️ Сума ({total_entered}) не дорівнює пробігу за період ({data['diff']}). Виправ."
-        )
-        return WAITING_FOR_DISTRIBUTION
+    if update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.edit_message_text(text, reply_markup=main_menu_keyboard())
+    else:
+        await update.effective_message.reply_text(text, reply_markup=main_menu_keyboard())
 
-    # Формули розрахунку (л/100км)
-    def calc(l_per_100, km):
-        exact = round(km * l_per_100 / 100, 4)
-        rounded = round(exact)
-        return exact, rounded
+async def on_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # Дуже спрощений звіт (приклад)
+    try:
+        values = ws.get_all_values()
+        if len(values) <= 1:
+            text = "Даних для звіту ще немає."
+        else:
+            # рахуємо по останніх N рядках або за поточний місяць
+            # тут просто по всім
+            total_km = 0
+            for row in values[1:]:
+                try:
+                    total_km += int(row[2])  # diff
+                except Exception:
+                    pass
+            text = f"Сумарний пробіг у таблиці: <b>{total_km} км</b>."
+    except Exception as e:
+        logger.exception(e)
+        text = f"Помилка при формуванні звіту: {e}"
 
-    c_exact, c_rounded = calc(11.66, city_km)
-    d_exact, d_rounded = calc(11.17, district_km)
-    h_exact, h_rounded = calc(10.19, highway_km)
-    total_exact = round(c_exact + d_exact + h_exact, 4)
-    total_rounded = round(total_exact)
+    if update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.edit_message_text(text, reply_markup=main_menu_keyboard(), parse_mode=ParseMode.HTML)
+    else:
+        await update.effective_message.reply_text(text, reply_markup=main_menu_keyboard(), parse_mode=ParseMode.HTML)
 
-    data.update({
-        "city_km": city_km, "city_exact": c_exact, "city_rounded": c_rounded,
-        "district_km": district_km, "district_exact": d_exact, "district_rounded": d_rounded,
-        "highway_km": highway_km, "highway_exact": h_exact, "highway_rounded": h_rounded,
-        "total_exact": total_exact, "total_rounded": total_rounded
-    })
-    user_data_store[user_id] = data
+# -------- Додавання запису (конверсейшн) --------
+async def start_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.edit_message_text("Введи поточний показник одометра:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Скасувати", callback_data="reset")]]))
+    else:
+        await update.effective_message.reply_text("Введи поточний показник одометра:", reply_markup=ReplyKeyboardRemove())
+    return STATE_WAITING_ODOMETER
 
-    summary = (
-        "📋 *Новий запис:*\n"
-        f"• Одометр: {data['odometer']}\n"
-        f"• Пробіг: {data['diff']} км\n"
-        f"• Місто: {city_km} км → {c_exact} л (≈ {c_rounded})\n"
-        f"• Район: {district_km} км → {d_exact} л (≈ {d_rounded})\n"
-        f"• Траса: {highway_km} км → {h_exact} л (≈ {h_rounded})\n"
-        f"• Загалом: {total_exact} л (≈ {total_rounded})\n\n"
-        "✅ Зберегти?"
+async def got_odometer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.effective_message.text or ""
+    val = parse_int(text)
+    if val is None or val <= 0:
+        await update.effective_message.reply_text("Надішли ціле число (км). Спробуй ще раз.")
+        return STATE_WAITING_ODOMETER
+
+    uid = update.effective_user.id
+    prev = get_prev_odometer()
+    diff = compute_distribution_diff(prev, val)
+    user_state[uid] = {
+        "odometer": val,
+        "diff": diff,
+    }
+    await update.effective_message.reply_text(
+        build_distribution_text(diff),
+        parse_mode=ParseMode.HTML,
     )
+    return STATE_WAITING_DISTRIBUTION
 
-    keyboard = [
-        [InlineKeyboardButton("✅ Так", callback_data="confirm_yes")],
-        [InlineKeyboardButton("❌ Ні", callback_data="confirm_no")]
-    ]
-    await update.message.reply_text(summary, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
-    return CONFIRMATION
+async def got_distribution(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    uid = update.effective_user.id
+    st = user_state.get(uid) or {}
+    dist = split_distribution(update.effective_message.text or "")
+    if not dist:
+        await update.effective_message.reply_text(
+            "Формат: <code>місто околиця траса</code>, наприклад: <code>120 30 50</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return STATE_WAITING_DISTRIBUTION
 
-# Крок 3 — Підтвердження
-async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
+    c, d, h = dist
+    if c < 0 or d < 0 or h < 0:
+        await update.effective_message.reply_text("Значення не можуть бути від’ємними.")
+        return STATE_WAITING_DISTRIBUTION
 
-    if query.data == "confirm_no":
-        user_data_store.pop(user_id, None)
-        await query.edit_message_text("❌ Скасовано.", reply_markup=_build_menu_keyboard())
+    diff = st.get("diff", 0)
+    if c + d + h != diff:
+        await update.effective_message.reply_text(
+            f"Сума ({c+d+h}) не дорівнює пробігу ({diff}). Введи ще раз."
+        )
+        return STATE_WAITING_DISTRIBUTION
+
+    st["city"] = c
+    st["district"] = d
+    st["highway"] = h
+    user_state[uid] = st
+
+    text = (
+        "<b>Підтверди запис:</b>\n"
+        f"Одометр: <b>{st['odometer']}</b>\n"
+        f"Пробіг: <b>{diff}</b>\n"
+        f"Місто/Округ/Траса: <b>{c}/{d}/{h}</b>"
+    )
+    kb = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("✅ Підтвердити", callback_data="confirm")],
+            [InlineKeyboardButton("❌ Скасувати", callback_data="reset")],
+        ]
+    )
+    await update.effective_message.reply_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    return STATE_WAITING_CONFIRMATION
+
+async def on_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.callback_query.answer()
+    uid = update.effective_user.id
+    st = user_state.get(uid)
+    if not st:
+        await update.callback_query.edit_message_text("Немає даних для збереження.", reply_markup=main_menu_keyboard())
         return ConversationHandler.END
 
-    data = user_data_store.pop(user_id, {})
-    if not data:
-        await query.edit_message_text("⚠️ Дані не знайдено.", reply_markup=_build_menu_keyboard())
-        return ConversationHandler.END
+    # Формування рядка під вашу структуру колонок (A..N).
+    # Якщо у вас складніші розрахунки (exact/rounded), підставте свої формули.
+    date_s = now_kyiv().strftime("%d.%m.%Y %H:%M")
+    od = st["odometer"]
+    diff = st["diff"]
+    c = st["city"]
+    d = st["district"]
+    h = st["highway"]
 
-    today = datetime.now().strftime("%d.%m.%Y")
+    # Заглушки exact/rounded (замініть своїми обчисленнями, якщо треба)
+    city_exact = c
+    city_rounded = c
+    district_exact = d
+    district_rounded = d
+    highway_exact = h
+    highway_rounded = h
+    total_exact = diff
+    total_rounded = diff
+
     row = [
-        today,
-        str(data["odometer"]),
-        str(data["diff"]),
-        str(int(data["city_km"])),
-        str(data["city_exact"]).replace('.', ','),
-        str(data["city_rounded"]),
-        str(int(data["district_km"])),
-        str(data["district_exact"]).replace('.', ','),
-        str(data["district_rounded"]),
-        str(int(data["highway_km"])),
-        str(data["highway_exact"]).replace('.', ','),
-        str(data["highway_rounded"]),
-        str(data["total_exact"]).replace('.', ','),
-        str(data["total_rounded"])
+        date_s,              # A: дата/час
+        od,                  # B: одометр
+        diff,                # C: різниця
+        c, city_exact, city_rounded,
+        d, district_exact, district_rounded,
+        h, highway_exact, highway_rounded,
+        total_exact, total_rounded
     ]
-    sheet.append_row(row)
-    # Вирівнювання та рамка для доданого рядка
-    row_index = len(sheet.get_all_values())
-    _format_new_row_style(row_index)
 
-    await query.edit_message_text("✅ Запис збережено.", reply_markup=_build_menu_keyboard())
+    try:
+        append_row_and_format(row)
+        user_state.pop(uid, None)
+        await update.callback_query.edit_message_text("✅ Збережено!", reply_markup=main_menu_keyboard())
+    except Exception as e:
+        logger.exception(e)
+        await update.callback_query.edit_message_text(f"Помилка збереження: {e}", reply_markup=main_menu_keyboard())
+
     return ConversationHandler.END
 
-# ---------------------- Ініціалізація PTB Application ----------------------
-telegram_app: Application | None = None
+# ------------------------------------------------------------
+# CALLBACKS (меню)
+# ------------------------------------------------------------
+async def on_menu_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    data = update.callback_query.data
+    if data == "add":
+        await start_add(update, context)
+        return
+    if data == "last":
+        await on_last(update, context)
+        return
+    if data == "report":
+        await on_report(update, context)
+        return
+    if data == "delete":
+        await on_delete(update, context)
+        return
+    if data == "reset":
+        await on_reset(update, context)
+        return
+    if data == "help":
+        await on_help(update, context)
+        return
+    await update.callback_query.answer("Невідома дія")
 
-def _build_telegram_app() -> Application:
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+# ------------------------------------------------------------
+# ІНІЦІАЛІЗАЦІЯ TELEGRAM APPLICATION
+# ------------------------------------------------------------
+async def init_telegram_app() -> None:
+    """
+    Створює Application, додає хендлери, ініціалізує & стартує,
+    ставить вебхук.
+    """
+    global telegram_app, ws
 
+    if not TELEGRAM_TOKEN:
+        raise RuntimeError("Не задано TELEGRAM_TOKEN")
+
+    # gsheet
+    if ws is None:
+        init_gsheet()
+
+    # Будуємо Application
+    telegram_app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+
+    # Handlers
     conv_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(handle_button)],
+        entry_points=[CallbackQueryHandler(start_add, pattern="^add$")],
         states={
-            WAITING_FOR_ODOMETER: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_odometer)],
-            WAITING_FOR_DISTRIBUTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_distribution)],
-            CONFIRMATION: [CallbackQueryHandler(handle_confirmation, pattern="^confirm_(yes|no)$")]
+            STATE_WAITING_ODOMETER: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, got_odometer)
+            ],
+            STATE_WAITING_DISTRIBUTION: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, got_distribution)
+            ],
+            STATE_WAITING_CONFIRMATION: [
+                CallbackQueryHandler(on_confirm, pattern="^confirm$")
+            ],
         },
-        fallbacks=[]
+        fallbacks=[
+            CallbackQueryHandler(on_reset, pattern="^reset$"),
+            CommandHandler("reset", on_reset),
+        ],
+        per_user=True,
+        per_chat=True,
+        per_message=True,  # щоб не було попередження
     )
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(conv_handler)
-    return app
+    telegram_app.add_handler(CommandHandler("start", cmd_start))
+    telegram_app.add_handler(CommandHandler("help", on_help))
+    telegram_app.add_handler(CommandHandler("last", on_last))
+    telegram_app.add_handler(CommandHandler("report", on_report))
+    telegram_app.add_handler(CommandHandler("delete", on_delete))
+    telegram_app.add_handler(CallbackQueryHandler(on_menu_click))
+    telegram_app.add_handler(conv_handler)
 
-# ---------------------- FastAPI (Render) ----------------------
-app = FastAPI()
+    # Перевірка з'єднання з Telegram API
+    bot_info = await telegram_app.bot.get_me()
+    logger.info(f"Бот успішно ініціалізовано: {bot_info.username}")
 
-@app.on_event("startup")
-async def on_startup():
-    global telegram_app
-    telegram_app = _build_telegram_app()
-    # Ініціалізуємо та стартуємо PTB-додаток для мануальної обробки апдейтів
+    # Запуск Telegram Application
     await telegram_app.initialize()
     await telegram_app.start()
 
-    # Вебхук
-    base = os.getenv("WEBHOOK_URL") or os.getenv("RENDER_EXTERNAL_URL")
-    if base:
-        webhook_url = base.rstrip("/") + "/webhook"
-        await telegram_app.bot.set_webhook(url=webhook_url)
-        log.info("Вебхук встановлено: %s", webhook_url)
-    else:
-        log.warning("WEBHOOK_URL/RENDER_EXTERNAL_URL не задано – вебхук не встановлено.")
+    # Налаштування вебхука
+    if not WEBHOOK_URL:
+        raise RuntimeError(
+            "Не задано WEBHOOK_URL або RENDER_EXTERNAL_HOSTNAME — не можу поставити вебхук"
+        )
+    logger.info(f"Ставимо вебхук: {WEBHOOK_URL}")
+    await telegram_app.bot.set_webhook(url=WEBHOOK_URL, drop_pending_updates=True)
+    logger.info("Вебхук встановлено")
 
-@app.on_event("shutdown")
+# ------------------------------------------------------------
+# STARLETTE APP + ROUTES
+# ------------------------------------------------------------
+async def on_startup():
+    # Ініціалізуємо Telegram Application та стартуємо його
+    await init_telegram_app()
+
 async def on_shutdown():
+    # Акуратно зупиняємо Telegram Application і прибираємо вебхук
     global telegram_app
-    if telegram_app:
+    if telegram_app is not None:
         try:
             await telegram_app.bot.delete_webhook(drop_pending_updates=False)
         except Exception as e:
-            log.warning("Не вдалося видалити вебхук: %s", e)
-        await telegram_app.stop()
-        await telegram_app.shutdown()
-        telegram_app = None
+            logger.warning(f"Не вдалося видалити вебхук при зупинці: {e}")
+        try:
+            await telegram_app.stop()
+        except Exception as e:
+            logger.warning(f"Помилка при зупинці Application: {e}")
+        try:
+            await telegram_app.shutdown()
+        except Exception as e:
+            logger.warning(f"Помилка при shutdown Application: {e}")
 
-# Healthcheck
-@app.get("/", response_class=PlainTextResponse)
-async def root_get():
-    return "Bot is running"
+app = Starlette(on_startup=[on_startup], on_shutdown=[on_shutdown])
 
-@app.head("/", response_class=PlainTextResponse)
-async def root_head():
-    return ""
+@app.get("/")
+async def root(_: Request):
+    return PlainTextResponse("OK")
 
-# Прийом апдейтів від Telegram
 @app.post("/webhook")
 async def webhook(request: Request):
+    global telegram_app
     if telegram_app is None:
-        log.error("Telegram Application не ініціалізовано")
-        return JSONResponse({"ok": False, "error": "app_not_initialized"}, status_code=500)
+        logger.error("Application ще не ініціалізовано!")
+        return JSONResponse({"status": "error", "detail": "app not initialized"}, status_code=500)
 
-    data = await request.json()
-    update = Update.de_json(data, telegram_app.bot)
-    await telegram_app.process_update(update)
-    return {"ok": True}
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"status": "error", "detail": "invalid json"}, status_code=400)
+
+    try:
+        update = Update.de_json(data, telegram_app.bot)
+        await telegram_app.process_update(update)
+    except BadRequest as e:
+        logger.warning(f"BadRequest: {e}")
+    except (TimedOut, NetworkError) as e:
+        logger.warning(f"Network issue: {e}")
+    except Exception as e:
+        logger.exception(e)
+        return JSONResponse({"status": "error"}, status_code=500)
+
+    return JSONResponse({"status": "ok"})
+
+# ------------------------------------------------------------
+# ЛОКАЛЬНИЙ ЗАПУСК
+# ------------------------------------------------------------
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.getenv("PORT", "8000"))
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
