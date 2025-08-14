@@ -4,6 +4,7 @@ gspread-formatting==1.1.2
 google-auth==2.35.0
 pytz==2025.2
 uvicorn==0.32.0
-fastapi==0.112.2
+fastapi==0.111.0
+starlette==0.37.2
 setuptools<81
-
+httpx~=0.25.2
