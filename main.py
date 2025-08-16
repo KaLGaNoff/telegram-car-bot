@@ -1,9 +1,7 @@
-# main.py
 import os
 import re
 import json
 import pytz
-import asyncio
 import logging
 from datetime import datetime
 
@@ -31,35 +29,26 @@ tz = pytz.timezone("Europe/Kiev")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("bot")
 
-# env (назви НЕ змінював)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
 SERVICE_ACCOUNT_JSON = os.getenv("SERVICE_ACCOUNT_JSON")
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
-# витрати л/100км (опційно)
 CITY_L100 = float(os.getenv("CITY_L_PER_100", "12"))
 DISTRICT_L100 = float(os.getenv("DISTRICT_L_PER_100", "9"))
 HIGHWAY_L100 = float(os.getenv("HIGHWAY_L_PER_100", "7"))
 
-# стани
 WAITING_FOR_ODOMETER, WAITING_FOR_DISTRIBUTION, CONFIRM = range(3)
 
-# глобалки
 telegram_app: Application | None = None
 gc = None
 worksheet = None
 user_data_store: dict[int, dict] = {}
 
-
 # =========================
 # УТИЛІТИ
 # =========================
 def _build_webhook_url() -> str:
-    """
-    Нормалізує URL вебхука до рівно '/webhook'.
-    Пріоритет: WEBHOOK_URL -> RENDER_EXTERNAL_HOSTNAME.
-    """
     env_url = os.getenv("WEBHOOK_URL")
     if env_url:
         url = env_url.strip()
@@ -71,7 +60,7 @@ def _build_webhook_url() -> str:
 
     url = url.rstrip("/")
     if url.endswith("/webhook/webhook"):
-        url = url[:-8]  # прибрати зайвий '/webhook'
+        url = url[:-8]
     if not url.endswith("/webhook"):
         url = f"{url}/webhook"
     return url
@@ -101,19 +90,12 @@ def _get_last_odometer() -> int | None:
     if len(vals) <= 1:
         return None
     try:
-        return int(vals[-1][1])  # колонка B
+        return int(vals[-1][1])
     except Exception:
         return None
 
 
-def _parse_distribution(text: str, total_km: int) -> tuple[int, int, int] | None:
-    """
-    Підтримує:
-    - 'місто 50 район 30 траса 20'
-    - 'м 50 р 30 т 20'
-    - '50/30/20' або '50 30 20'
-    Сума повинна дорівнювати total_km.
-    """
+def _parse_distribution(text: str, total_km: int):
     t = text.lower().strip()
     nums = re.findall(r"\d+", t)
     if len(nums) == 3:
@@ -337,20 +319,20 @@ async def confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     now = datetime.now(tz)
     row = [
-        now.strftime("%Y-%m-%d %H:%M:%S"),             # A
-        str(data["odometer"]),                          # B
-        str(data["diff"]),                              # C
-        str(data["city_km"]),                           # D
-        f"{data['city_exact']:.4f}",                    # E
-        f"{data['city_rounded']:.2f}",                  # F
-        str(data["district_km"]),                       # G
-        f"{data['district_exact']:.4f}",                # H
-        f"{data['district_rounded']:.2f}",              # I
-        str(data["highway_km"]),                        # J
-        f"{data['highway_exact']:.4f}",                 # K
-        f"{data['highway_rounded']:.2f}",               # L
-        f"{data['total_exact']:.4f}",                   # M
-        f"{data['total_rounded']:.2f}",                 # N
+        now.strftime("%Y-%m-%d %H:%M:%S"),
+        str(data["odometer"]),
+        str(data["diff"]),
+        str(data["city_km"]),
+        f"{data['city_exact']:.4f}",
+        f"{data['city_rounded']:.2f}",
+        str(data["district_km"]),
+        f"{data['district_exact']:.4f}",
+        f"{data['district_rounded']:.2f}",
+        str(data["highway_km"]),
+        f"{data['highway_exact']:.4f}",
+        f"{data['highway_rounded']:.2f}",
+        f"{data['total_exact']:.4f}",
+        f"{data['total_rounded']:.2f}",
     ]
     worksheet.append_row(row, value_input_option="RAW")
     r = _last_row_index()
@@ -398,7 +380,6 @@ async def init_telegram_app():
         fallbacks=[CommandHandler("cancel", cancel_save)],
         per_chat=True,
         per_user=True,
-        # ВАЖЛИВО: НЕ ставимо per_message=True — інакше /start та текст не працюватимуть
     )
 
     telegram_app.add_handler(conv_handler)
@@ -471,7 +452,4 @@ app = Starlette(
 # локальний запуск
 if __name__ == "__main__":
     import uvicorn
-    async def _local():
-        await init_telegram_app()
-    asyncio.run(_local())
     uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")), reload=False)
