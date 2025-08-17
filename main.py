@@ -1,3 +1,4 @@
+# main.py
 import os
 import re
 import json
@@ -49,6 +50,10 @@ user_data_store: dict[int, dict] = {}
 # УТИЛІТИ
 # =========================
 def _build_webhook_url() -> str:
+    """
+    Повертає фінальний URL, який ЗАВЖДИ закінчується на /webhook
+    і ніколи не дублює '/webhook/webhook'.
+    """
     env_url = os.getenv("WEBHOOK_URL")
     if env_url:
         url = env_url.strip()
@@ -60,7 +65,7 @@ def _build_webhook_url() -> str:
 
     url = url.rstrip("/")
     if url.endswith("/webhook/webhook"):
-        url = url[:-8]
+        url = url[:-8]  # прибрати зайвий '/webhook'
     if not url.endswith("/webhook"):
         url = f"{url}/webhook"
     return url
@@ -90,12 +95,19 @@ def _get_last_odometer() -> int | None:
     if len(vals) <= 1:
         return None
     try:
-        return int(vals[-1][1])
+        return int(vals[-1][1])  # колонка B
     except Exception:
         return None
 
 
 def _parse_distribution(text: str, total_km: int):
+    """
+    Приклади:
+      - 'місто 50 район 30 траса 20'
+      - 'м 50 р 30 т 20'
+      - '50/30/20' або '50 30 20'
+    Сума повинна дорівнювати total_km.
+    """
     t = text.lower().strip()
     nums = re.findall(r"\d+", t)
     if len(nums) == 3:
@@ -356,6 +368,12 @@ async def cancel_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ІНІЦІАЛІЗАЦІЯ / ЖИТТЄВИЙ ЦИКЛ
 # =========================
 async def init_telegram_app():
+    """
+    ВАЖЛИВО:
+    - initialize()
+    - start()   <-- без цього PTB не приймає апдейти стабільно
+    - set_webhook()
+    """
     global telegram_app
     if telegram_app is not None:
         return
@@ -386,6 +404,7 @@ async def init_telegram_app():
     telegram_app.add_handler(CommandHandler("help", start))
 
     await telegram_app.initialize()
+    await telegram_app.start()  # <-- ключове
 
     webhook_url = _build_webhook_url()
     await telegram_app.bot.set_webhook(url=webhook_url, drop_pending_updates=True)
@@ -401,7 +420,11 @@ async def shutdown_telegram_app():
     except Exception as e:
         logger.warning(f"Помилка deleteWebhook: {e}")
     try:
-        await telegram_app.shutdown()
+        await telegram_app.stop()       # <-- зупиняємо PTB
+    except Exception as e:
+        logger.warning(f"Помилка Application.stop: {e}")
+    try:
+        await telegram_app.shutdown()   # <-- шатутаун ресурсів PTB
     except Exception as e:
         logger.warning(f"Помилка Application.shutdown: {e}")
     telegram_app = None
@@ -449,7 +472,7 @@ app = Starlette(
     on_shutdown=[shutdown_telegram_app],
 )
 
-# локальний запуск
+# Локальний запуск
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")), reload=False)
