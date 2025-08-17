@@ -1,4 +1,3 @@
-# main.py
 import os
 import re
 import json
@@ -31,11 +30,11 @@ tz = pytz.timezone("Europe/Kiev")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("bot")
 
-# env
+# env (назви НЕ змінював)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
 SERVICE_ACCOUNT_JSON = os.getenv("SERVICE_ACCOUNT_JSON")
-OWNER_ID = int(os.getenv("OWNER_ID", "0"))
+OWNER_ID = int(os.getenv("OWNER_ID", "270380991"))  # <-- твій ID
 
 # витрати л/100км
 CITY_L100 = float(os.getenv("CITY_L_PER_100", "12"))
@@ -56,10 +55,6 @@ user_data_store: dict[int, dict] = {}
 # УТИЛІТИ
 # =========================
 def _build_webhook_url() -> str:
-    """
-    Нормалізує URL вебхука до рівно '/webhook'.
-    Пріоритет: WEBHOOK_URL -> RENDER_EXTERNAL_HOSTNAME.
-    """
     env_url = os.getenv("WEBHOOK_URL")
     if env_url:
         url = env_url.strip()
@@ -71,7 +66,7 @@ def _build_webhook_url() -> str:
 
     url = url.rstrip("/")
     if url.endswith("/webhook/webhook"):
-        url = url[:-8]  # прибрати зайвий '/webhook'
+        url = url[:-8]
     if not url.endswith("/webhook"):
         url = f"{url}/webhook"
     return url
@@ -107,13 +102,6 @@ def _get_last_odometer() -> int | None:
 
 
 def _parse_distribution(text: str, total_km: int) -> tuple[int, int, int] | None:
-    """
-    Підтримує:
-    - 'місто 50 район 30 траса 20'
-    - 'м 50 р 30 т 20'
-    - '50/30/20' або '50 30 20'
-    Сума повинна дорівнювати total_km.
-    """
     t = text.lower().strip()
     nums = re.findall(r"\d+", t)
     if len(nums) == 3:
@@ -371,7 +359,7 @@ async def cancel_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =========================
-# ІНІЦІАЛІЗАЦІЯ / ЖИТТЄВИЙ ЦИКЛ
+# ІНІЦІАЛІЗАЦІЯ
 # =========================
 async def init_telegram_app():
     global telegram_app
@@ -380,6 +368,7 @@ async def init_telegram_app():
 
     if not TELEGRAM_TOKEN:
         raise RuntimeError("Не знайдено TELEGRAM_TOKEN")
+
     _authorize_gspread()
 
     telegram_app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
@@ -397,23 +386,15 @@ async def init_telegram_app():
         fallbacks=[CommandHandler("cancel", cancel_save)],
         per_chat=True,
         per_user=True,
-        # НЕ ставимо per_message=True
     )
 
     telegram_app.add_handler(conv_handler)
     telegram_app.add_handler(CommandHandler("help", start))
 
-    # 1) init
     await telegram_app.initialize()
-
-    # 2) webhook
     webhook_url = _build_webhook_url()
     await telegram_app.bot.set_webhook(url=webhook_url, drop_pending_updates=True)
     logger.info(f"Вебхук встановлено: {webhook_url}")
-
-    # 3) start (обов'язково для обробки оновлень + job_queue)
-    await telegram_app.start()
-    logger.info("PTB application started")
 
 
 async def shutdown_telegram_app():
@@ -424,10 +405,6 @@ async def shutdown_telegram_app():
         await telegram_app.bot.delete_webhook()
     except Exception as e:
         logger.warning(f"Помилка deleteWebhook: {e}")
-    try:
-        await telegram_app.stop()
-    except Exception as e:
-        logger.warning(f"Помилка Application.stop: {e}")
     try:
         await telegram_app.shutdown()
     except Exception as e:
@@ -440,7 +417,7 @@ async def shutdown_telegram_app():
 # HTTP ROUTES
 # =========================
 async def home(request: Request):
-    return PlainTextResponse("Bot is running")
+    return PlainTextResponse("Bot is alive ✅")
 
 async def webhook(request: Request):
     global telegram_app
@@ -480,5 +457,7 @@ app = Starlette(
 # локальний запуск
 if __name__ == "__main__":
     import uvicorn
-    # on_startup сам викличе init_telegram_app
+    async def _local():
+        await init_telegram_app()
+    asyncio.run(_local())
     uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")), reload=False)
