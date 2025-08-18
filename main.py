@@ -74,61 +74,78 @@ def _build_webhook_url() -> str:
 def _authorize_gspread():
     global gc, worksheet
     logger.debug("Авторизація gspread")
-    creds_info = json.loads(SERVICE_ACCOUNT_JSON)
-    scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-    creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
-    gc = gspread.authorize(creds)
-    worksheet = gc.open_by_key(GOOGLE_SHEET_ID).sheet1
-    logger.info("gspread авторизовано успішно")
+    try:
+        creds_info = json.loads(SERVICE_ACCOUNT_JSON)
+        scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+        creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
+        gc = gspread.authorize(creds)
+        worksheet = gc.open_by_key(GOOGLE_SHEET_ID).sheet1
+        logger.info("gspread авторизовано успішно")
+    except Exception as e:
+        logger.error(f"Помилка авторизації gspread: {e}", exc_info=True)
+        raise
 
 
 def _last_row_index() -> int:
     logger.debug("Отримуємо індекс останнього рядка")
-    row_count = len(worksheet.get_all_values())
-    logger.debug(f"Індекс останнього рядка: {row_count}")
-    return row_count
+    try:
+        row_count = len(worksheet.get_all_values())
+        logger.debug(f"Індекс останнього рядка: {row_count}")
+        return row_count
+    except Exception as e:
+        logger.error(f"Помилка отримання індексу рядка: {e}", exc_info=True)
+        return 1
 
 
 def _get_last_odometer() -> int | None:
     logger.debug("Отримуємо останній показник одометра")
-    vals = worksheet.get_all_values()
-    if len(vals) <= 1:
-        logger.debug("Немає записів для одометра")
-        return None
     try:
+        vals = worksheet.get_all_values()
+        if len(vals) <= 1:
+            logger.debug("Немає записів для одометра")
+            return None
         last_odo = int(vals[-1][1])
         logger.debug(f"Останній одометр: {last_odo}")
         return last_odo
     except Exception as e:
-        logger.error(f"Помилка отримання одометра: {e}")
+        logger.error(f"Помилка отримання одометра: {e}", exc_info=True)
         return None
 
 
 def _parse_distribution(text: str, total_km: int) -> tuple[int, int, int] | None:
     logger.debug(f"Парсимо розподіл: {text}, сума = {total_km}")
-    t = text.lower().strip()
-    nums = re.findall(r"\d+", t)
-    if len(nums) == 3:
-        a, b, c = map(int, nums[:3])
-        if a + b + c == total_km:
-            logger.debug(f"Розподіл коректний: місто={a}, район={b}, траса={c}")
-            return a, b, c
+    text = text.lower().strip()
+    # Спрощуємо формат: приймаємо "місто X", "X Y Z" або "X"
+    nums = re.findall(r"\d+", text)
+    if len(nums) == 1 and "місто" in text:
+        city = int(nums[0])
+        if city == total_km:
+            logger.debug(f"Розподіл: місто={city}, район=0, траса=0")
+            return city, 0, 0
+    elif len(nums) == 3:
+        city, dist, hw = map(int, nums[:3])
+        if city + dist + hw == total_km:
+            logger.debug(f"Розподіл коректний: місто={city}, район={dist}, траса={hw}")
+            return city, dist, hw
     logger.debug("Невірний розподіл")
     return None
 
 
 def _format_just_added_row(row_index: int):
     logger.debug(f"Форматуємо рядок {row_index}")
-    fmt = CellFormat(
-        textFormat=TextFormat(bold=False),
-        horizontalAlignment="CENTER",
-        borders=Borders(
-            top={"style": "SOLID"}, bottom={"style": "SOLID"},
-            left={"style": "SOLID"}, right={"style": "SOLID"}
-        ),
-    )
-    format_cell_range(worksheet, f"A{row_index}:N{row_index}", fmt)
-    logger.debug(f"Рядок {row_index} відформатовано")
+    try:
+        fmt = CellFormat(
+            textFormat=TextFormat(bold=False),
+            horizontalAlignment="CENTER",
+            borders=Borders(
+                top={"style": "SOLID"}, bottom={"style": "SOLID"},
+                left={"style": "SOLID"}, right={"style": "SOLID"}
+            ),
+        )
+        format_cell_range(worksheet, f"A{row_index}:N{row_index}", fmt)
+        logger.debug(f"Рядок {row_index} відформатовано")
+    except Exception as e:
+        logger.error(f"Помилка форматування рядка {row_index}: {e}", exc_info=True)
 
 
 # KEYBOARD
@@ -159,6 +176,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.debug(f"Скасування розмови для користувача {update.effective_user.id}")
+    context.user_data.clear()
+    user_data_store.pop(update.effective_user.id, None)
     await update.message.reply_text("🚫 Дію скасовано.", reply_markup=_main_keyboard())
     return ConversationHandler.END
 
@@ -166,73 +185,79 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     logger.debug(f"Обробка кнопки: {q.data} від користувача {q.from_user.id}")
-    await q.answer()
-    if q.from_user.id != OWNER_ID:
-        logger.warning(f"Несанкціонований доступ до кнопки: {q.from_user.id}")
-        await q.edit_message_text("❌ У тебе немає доступу.")
-        return ConversationHandler.END
-
-    if q.data == "add":
-        last_odo = _get_last_odometer()
-        hint = f" (попередній: {last_odo})" if last_odo else ""
-        await q.edit_message_text(f"Введи одометр{hint}:")
-        logger.info(f"Користувач {q.from_user.id} обрав додавання запису")
-        context.user_data["state"] = WAITING_FOR_ODOMETER
-        return WAITING_FOR_ODOMETER
-
-    if q.data == "delete":
-        r = _last_row_index()
-        if r > 1:
-            worksheet.delete_rows(r)
-            await q.edit_message_text("✅ Видалено останній запис.")
-            logger.info(f"Останній запис видалено, рядок: {r}")
-        else:
-            await q.edit_message_text("Немає що видаляти.")
-            logger.info("Спроба видалити запис, але таблиця порожня")
-        return ConversationHandler.END
-
-    if q.data == "last":
-        vals = worksheet.get_all_values()
-        if len(vals) <= 1:
-            await q.edit_message_text("Немає записів.")
-            logger.info("Спроба перегляду останнього запису, але таблиця порожня")
+    try:
+        await q.answer()
+        if q.from_user.id != OWNER_ID:
+            logger.warning(f"Несанкціонований доступ до кнопки: {q.from_user.id}")
+            await q.edit_message_text("❌ У тебе немає доступу.")
             return ConversationHandler.END
-        await q.edit_message_text(str(vals[-1]))
-        logger.info(f"Останній запис відображено: {vals[-1]}")
-        return ConversationHandler.END
 
-    if q.data == "report":
-        now = datetime.now(tz)
-        month = now.strftime("%Y-%m")
-        vals = worksheet.get_all_values()
-        total = sum(float(r[13]) for r in vals[1:] if r and r[0].startswith(month))
-        await q.edit_message_text(f"📊 Звіт {month}: {round(total,2)} л")
-        logger.info(f"Звіт за {month}: {round(total,2)} л")
-        return ConversationHandler.END
+        if q.data == "add":
+            last_odo = _get_last_odometer()
+            hint = f" (попередній: {last_odo})" if last_odo else ""
+            await q.edit_message_text(f"Введи одометр{hint}:")
+            logger.info(f"Користувач {q.from_user.id} обрав додавання запису")
+            context.user_data["state"] = WAITING_FOR_ODOMETER
+            return WAITING_FOR_ODOMETER
 
-    if q.data == "reset":
-        user_data_store.pop(q.from_user.id, None)
-        await q.edit_message_text("🔁 Дані скинуто.")
-        logger.info(f"Дані скинуто для користувача {q.from_user.id}")
-        return ConversationHandler.END
+        if q.data == "delete":
+            r = _last_row_index()
+            if r > 1:
+                worksheet.delete_rows(r)
+                await q.edit_message_text("✅ Видалено останній запис.")
+                logger.info(f"Останній запис видалено, рядок: {r}")
+            else:
+                await q.edit_message_text("Немає що видаляти.")
+                logger.info("Спроба видалити запис, але таблиця порожня")
+            return ConversationHandler.END
 
-    if q.data == "help":
-        await q.edit_message_text(
-            "❓ Допомога: \n"
-            "- /start: меню\n"
-            "- Додати запис: показує останній одометр, введи новий, потім розподіл (місто район траса), сума = різниця.\n"
-            "- Останній запис: показує останній рядок.\n"
-            "- Видалити останній: видаляє останній запис.\n"
-            "- Звіт місяця: показує витрати за місяць.\n"
-            "- Скинути: очищає тимчасові дані.\n"
-            "- /cancel: скасувати діалог."
-        )
-        logger.info(f"Допомога показана для користувача {q.from_user.id}")
-        return ConversationHandler.END
+        if q.data == "last":
+            vals = worksheet.get_all_values()
+            if len(vals) <= 1:
+                await q.edit_message_text("Немає записів.")
+                logger.info("Спроба перегляду останнього запису, але таблиця порожня")
+                return ConversationHandler.END
+            await q.edit_message_text(str(vals[-1]))
+            logger.info(f"Останній запис відображено: {vals[-1]}")
+            return ConversationHandler.END
 
-    await q.edit_message_text("Невідома дія.")
-    logger.warning(f"Невідома дія кнопки: {q.data} від користувача {q.from_user.id}")
-    return ConversationHandler.END
+        if q.data == "report":
+            now = datetime.now(tz)
+            month = now.strftime("%Y-%m")
+            vals = worksheet.get_all_values()
+            total = sum(float(r[13]) for r in vals[1:] if r and r[0].startswith(month))
+            await q.edit_message_text(f"📊 Звіт {month}: {round(total,2)} л")
+            logger.info(f"Звіт за {month}: {round(total,2)} л")
+            return ConversationHandler.END
+
+        if q.data == "reset":
+            user_data_store.pop(q.from_user.id, None)
+            context.user_data.clear()
+            await q.edit_message_text("🔁 Дані скинуто.")
+            logger.info(f"Дані скинуто для користувача {q.from_user.id}")
+            return ConversationHandler.END
+
+        if q.data == "help":
+            await q.edit_message_text(
+                "❓ Допомога: \n"
+                "- /start: меню\n"
+                "- Додати запис: показує останній одометр, введи новий, потім розподіл (місто, район, траса), сума = різниця.\n"
+                "- Останній запис: показує останній рядок.\n"
+                "- Видалити останній: видаляє останній запис.\n"
+                "- Звіт місяця: показує витрати за місяць.\n"
+                "- Скинути: очищає тимчасові дані.\n"
+                "- /cancel: скасувати діалог."
+            )
+            logger.info(f"Допомога показана для користувача {q.from_user.id}")
+            return ConversationHandler.END
+
+        await q.edit_message_text("Невідома дія.")
+        logger.warning(f"Невідома дія кнопки: {q.data} від користувача {q.from_user.id}")
+        return ConversationHandler.END
+    except Exception as e:
+        logger.error(f"Помилка обробки кнопки {q.data}: {e}", exc_info=True)
+        await q.edit_message_text("🚫 Помилка. Спробуй /start.")
+        return ConversationHandler.END
 
 
 async def handle_odometer(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -242,68 +267,83 @@ async def handle_odometer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         prev = _get_last_odometer()
         diff = odo - prev if prev else 0
         user_data_store[update.effective_user.id] = {"odometer": odo, "diff": diff}
-        await update.message.reply_text(f"Введи розподіл (сума = {diff})")
+        await update.message.reply_text(f"Введи розподіл: місто, район, траса (сума = {diff})")
         logger.info(f"Одометр введено: {odo}, різниця: {diff}")
         context.user_data["state"] = WAITING_FOR_DISTRIBUTION
         return WAITING_FOR_DISTRIBUTION
     except ValueError as e:
-        logger.error(f"Помилка парсингу одометра: {e}")
+        logger.error(f"Помилка парсингу одометра: {e}", exc_info=True)
         await update.message.reply_text("❌ Введи ціле число.")
         return WAITING_FOR_ODOMETER
+    except Exception as e:
+        logger.error(f"Помилка обробки одометра: {e}", exc_info=True)
+        await update.message.reply_text("🚫 Помилка. Спробуй /start.")
+        return ConversationHandler.END
 
 
 async def handle_distribution(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     logger.debug(f"Обробка розподілу: {update.message.text} від користувача {user_id}, стан: {context.user_data.get('state')}")
-    data = user_data_store.get(user_id)
-    if not data:
-        logger.error("Немає даних користувача для розподілу")
-        await update.message.reply_text("🚫 Помилка. Почни з /start.")
+    try:
+        data = user_data_store.get(user_id)
+        if not data:
+            logger.error("Немає даних користувача для розподілу")
+            await update.message.reply_text("🚫 Помилка. Почни з /start.")
+            return ConversationHandler.END
+        parsed = _parse_distribution(update.message.text, data["diff"])
+        if not parsed:
+            await update.message.reply_text("❌ Невірний розподіл. Введи: місто, район, траса (сума = {})".format(data["diff"]))
+            logger.warning(f"Невірний розподіл: {update.message.text}")
+            return WAITING_FOR_DISTRIBUTION
+        city, dist, hw = parsed
+        c = city * CITY_L100 / 100
+        d = dist * DISTRICT_L100 / 100
+        h = hw * HIGHWAY_L100 / 100
+        t = c + d + h
+        data.update({"city": city, "dist": dist, "hw": hw, "c": c, "d": d, "h": h, "t": t})
+        await update.message.reply_text(f"🏙 {c:.2f} л, 🏞 {d:.2f} л, 🛣 {h:.2f} л\nΣ {t:.2f} л. Зберегти?")
+        logger.info(f"Розподіл оброблено: місто={c:.2f}, район={d:.2f}, траса={h:.2f}, сума={t:.2f}")
+        context.user_data["state"] = CONFIRM
+        return CONFIRM
+    except Exception as e:
+        logger.error(f"Помилка обробки розподілу: {e}", exc_info=True)
+        await update.message.reply_text("🚫 Помилка. Спробуй /start.")
         return ConversationHandler.END
-    parsed = _parse_distribution(update.message.text, data["diff"])
-    if not parsed:
-        await update.message.reply_text("❌ Невірний розподіл.")
-        logger.warning(f"Невірний розподіл: {update.message.text}")
-        return WAITING_FOR_DISTRIBUTION
-    city, dist, hw = parsed
-    c = city * CITY_L100 / 100
-    d = dist * DISTRICT_L100 / 100
-    h = hw * HIGHWAY_L100 / 100
-    t = c + d + h
-    data.update({"city": city, "dist": dist, "hw": hw, "c": c, "d": d, "h": h, "t": t})
-    await update.message.reply_text(f"🏙 {c:.2f} л, 🏞 {d:.2f} л, 🛣 {h:.2f} л\nΣ {t:.2f} л. Зберегти?")
-    logger.info(f"Розподіл оброблено: місто={c:.2f}, район={d:.2f}, траса={h:.2f}, сума={t:.2f}")
-    context.user_data["state"] = CONFIRM
-    return CONFIRM
 
 
 async def confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     logger.debug(f"Підтвердження збереження від користувача {user_id}, стан: {context.user_data.get('state')}")
-    d = user_data_store.pop(user_id, None)
-    if not d:
-        logger.error("Немає даних для збереження")
-        await update.message.reply_text("🚫 Помилка. Почни з /start.")
+    try:
+        d = user_data_store.pop(user_id, None)
+        if not d:
+            logger.error("Немає даних для збереження")
+            await update.message.reply_text("🚫 Помилка. Почни з /start.")
+            return ConversationHandler.END
+        now = datetime.now(tz)
+        row = [now.strftime("%Y-%m-%d %H:%M:%S"), d["odometer"], d["diff"],
+               d["city"], f"{d['c']:.4f}", round(d["c"]),
+               d["dist"], f"{d['d']:.4f}", round(d["d"]),
+               d["hw"], f"{d['h']:.4f}", round(d["h"]),
+               f"{d['t']:.4f}", round(d["t"])]
+        worksheet.append_row(row)
+        _format_just_added_row(_last_row_index())
+        await update.message.reply_text("✅ Збережено.", reply_markup=_main_keyboard())
+        logger.info(f"Запис збережено: {row}")
+        context.user_data.clear()
         return ConversationHandler.END
-    now = datetime.now(tz)
-    row = [now.strftime("%Y-%m-%d %H:%M:%S"), d["odometer"], d["diff"],
-           d["city"], f"{d['c']:.4f}", round(d["c"]),
-           d["dist"], f"{d['d']:.4f}", round(d["d"]),
-           d["hw"], f"{d['h']:.4f}", round(d["h"]),
-           f"{d['t']:.4f}", round(d["t"])]
-    worksheet.append_row(row)
-    _format_just_added_row(_last_row_index())
-    await update.message.reply_text("✅ Збережено.", reply_markup=_main_keyboard())
-    logger.info(f"Запис збережено: {row}")
-    context.user_data.clear()
-    return ConversationHandler.END
+    except Exception as e:
+        logger.error(f"Помилка збереження: {e}", exc_info=True)
+        await update.message.reply_text("🚫 Помилка. Спробуй /start.")
+        return ConversationHandler.END
 
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Помилка: {context.error}", exc_info=True)
-    if update:
+    if update and update.message:
         await update.message.reply_text("🚫 Виникла помилка. Спробуй /start.")
     context.user_data.clear()
+    user_data_store.pop(update.effective_user.id, None) if update else None
     return ConversationHandler.END
 
 
@@ -315,9 +355,11 @@ async def keep_alive():
             try:
                 async with session.get("https://telegram-car-bot-px9n.onrender.com") as resp:
                     logger.debug(f"keep_alive пінг: статус {resp.status}")
+                    if resp.status != 200:
+                        logger.error(f"keep_alive неуспішний: статус {resp.status}")
             except Exception as e:
-                logger.error(f"Помилка keep_alive: {e}")
-            await asyncio.sleep(15)
+                logger.error(f"Помилка keep_alive: {e}", exc_info=True)
+            await asyncio.sleep(10)  # Зменшено інтервал до 10 секунд
 
 
 async def telegram_ping():
@@ -330,8 +372,8 @@ async def telegram_ping():
                     if resp.status != 200:
                         logger.error(f"telegram_ping неуспішний: статус {resp.status}")
             except Exception as e:
-                logger.error(f"Помилка telegram_ping: {e}")
-            await asyncio.sleep(10)
+                logger.error(f"Помилка telegram_ping: {e}", exc_info=True)
+            await asyncio.sleep(5)  # Зменшено інтервал до 5 секунд
 
 
 # APP
