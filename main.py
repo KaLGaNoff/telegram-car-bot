@@ -1,3 +1,4 @@
+```python
 import os
 import re
 import json
@@ -310,7 +311,7 @@ async def init_telegram_app():
         logger.info("telegram_app запущено")
         webhook_url = _build_webhook_url()
         logger.debug(f"Встановлюємо вебхук: {webhook_url}")
-        await telegram_app.bot.set_webhook(webhook_url, drop_pending_updates=True, timeout=30)
+        await telegram_app.bot.set_webhook(webhook_url, drop_pending_updates=True)
         logger.info(f"Webhook успішно встановлено: {webhook_url}")
     except Exception as e:
         logger.error(f"Помилка ініціалізації Telegram Application: {e}", exc_info=True)
