@@ -1,9 +1,11 @@
+```python
 import os
 import re
 import json
 import pytz
 import asyncio
 import logging
+import aiohttp
 from datetime import datetime
 
 from starlette.applications import Starlette
@@ -34,6 +36,7 @@ logger.setLevel(logging.DEBUG)  # Увімкнення DEBUG-логів глоб
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
 SERVICE_ACCOUNT_JSON = os.getenv("SERVICE_ACCOUNT_JSON")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME', '')}/webhook").rstrip("/")
 
 # Твій ID
 OWNER_ID = 270380991
@@ -275,6 +278,21 @@ async def confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =========================
+# KEEP ALIVE
+# =========================
+async def keep_alive():
+    logger.debug("Запускаємо keep_alive для пінгу сервера")
+    async with aiohttp.ClientSession() as session:
+        while True:
+            try:
+                async with session.get("https://telegram-car-bot-px9n.onrender.com") as resp:
+                    logger.debug(f"keep_alive пінг: статус {resp.status}")
+            except Exception as e:
+                logger.error(f"Помилка keep_alive: {e}")
+            await asyncio.sleep(30)  # Пінг кожні 30 секунд
+
+
+# =========================
 # APP
 # =========================
 async def init_telegram_app():
@@ -312,6 +330,9 @@ async def init_telegram_app():
         logger.debug(f"Встановлюємо вебхук: {webhook_url}")
         await telegram_app.bot.set_webhook(webhook_url, drop_pending_updates=True)
         logger.info(f"Webhook успішно встановлено: {webhook_url}")
+        # Запускаємо keep_alive
+        asyncio.create_task(keep_alive())
+        logger.info("keep_alive завдання запущено")
     except Exception as e:
         logger.error(f"Помилка ініціалізації Telegram Application: {e}", exc_info=True)
         telegram_app = None
@@ -370,3 +391,4 @@ async def webhook(request: Request):
 
 routes = [Route("/", home), Route("/webhook", webhook, methods=["POST"])]
 app = Starlette(routes=routes, on_startup=[init_telegram_app], on_shutdown=[shutdown_telegram_app])
+```
