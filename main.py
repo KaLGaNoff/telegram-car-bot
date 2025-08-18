@@ -162,9 +162,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
         logger.warning(f"Несанкціонований доступ: {update.effective_user.id}")
         await update.message.reply_text("❌ У тебе немає доступу.")
-        return
+        return ConversationHandler.END
     await update.message.reply_text("Привіт! Обери дію 👇", reply_markup=_main_keyboard())
     logger.info(f"Команда /start успішно оброблена для {update.effective_user.id}")
+    return ConversationHandler.END
 
 
 async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -288,16 +289,18 @@ async def init_telegram_app():
         logger.info("ApplicationBuilder створено успішно")
         logger.debug("Додаємо обробники")
         conv = ConversationHandler(
-            entry_points=[CommandHandler("start", start), CallbackQueryHandler(handle_buttons)],
+            entry_points=[CommandHandler("start", start)],
             states={
-                WAITING_FOR_ODOMETER: [MessageHandler(filters.TEXT, handle_odometer)],
-                WAITING_FOR_DISTRIBUTION: [MessageHandler(filters.TEXT, handle_distribution)],
-                CONFIRM: [MessageHandler(filters.TEXT, confirm_save)]
+                WAITING_FOR_ODOMETER: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_odometer)],
+                WAITING_FOR_DISTRIBUTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_distribution)],
+                CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirm_save)]
             },
-            fallbacks=[],
-            per_message=True,  # Додано для прибирання PTBUserWarning
+            fallbacks=[CommandHandler("cancel", lambda update, context: ConversationHandler.END)],
+            per_chat=True,
+            per_user=True,
         )
         telegram_app.add_handler(conv)
+        telegram_app.add_handler(CallbackQueryHandler(handle_buttons))
         logger.info("Обробники додано успішно")
         logger.debug("Ініціалізація telegram_app")
         await telegram_app.initialize()
@@ -307,7 +310,7 @@ async def init_telegram_app():
         logger.info("telegram_app запущено")
         webhook_url = _build_webhook_url()
         logger.debug(f"Встановлюємо вебхук: {webhook_url}")
-        await telegram_app.bot.set_webhook(webhook_url, drop_pending_updates=True)
+        await telegram_app.bot.set_webhook(webhook_url, drop_pending_updates=True, timeout=30)
         logger.info(f"Webhook успішно встановлено: {webhook_url}")
     except Exception as e:
         logger.error(f"Помилка ініціалізації Telegram Application: {e}", exc_info=True)
@@ -352,7 +355,11 @@ async def webhook(request: Request):
         return Response(status_code=500)
     try:
         data = await request.json()
+        logger.debug(f"Отримано дані вебхука: {data}")
         update = Update.de_json(data, bot=telegram_app.bot)
+        if update is None:
+            logger.error("Не вдалося десеріалізувати оновлення")
+            return Response(status_code=400)
         await telegram_app.process_update(update)
         logger.info("Вебхук оброблено успішно")
         return Response(status_code=200)
