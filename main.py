@@ -1,4 +1,3 @@
-```python
 import os
 import re
 import json
@@ -406,4 +405,3 @@ async def webhook(request: Request):
 
 routes = [Route("/", home), Route("/webhook", webhook, methods=["POST"])]
 app = Starlette(routes=routes, on_startup=[init_telegram_app], on_shutdown=[shutdown_telegram_app])
-```
