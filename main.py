@@ -169,6 +169,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.warning(f"Несанкціонований доступ: {update.effective_user.id}")
         await update.message.reply_text("❌ У тебе немає доступу.")
         return
+    context.user_data.clear()  # Очищаємо стан при /start
+    user_data_store.pop(update.effective_user.id, None)
     await update.message.reply_text("Привіт! Обери дію 👇", reply_markup=_main_keyboard())
     logger.info(f"Команда /start успішно оброблена для {update.effective_user.id}")
 
@@ -342,12 +344,19 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_odometer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.debug(f"Обробка одометра: {update.message.text} від користувача {update.effective_user.id}, стан: {context.user_data.get('state')}")
+    user_id = update.effective_user.id
+    logger.debug(f"Обробка одометра: {update.message.text} від користувача {user_id}, стан: {context.user_data.get('state')}")
     try:
+        if context.user_data.get("state") != WAITING_FOR_ODOMETER:
+            logger.warning(f"Невірний стан для одометра: {context.user_data.get('state')}")
+            context.user_data.clear()
+            user_data_store.pop(user_id, None)
+            await update.message.reply_text("🚫 Почни з /start або натисни 'Додати запис'.")
+            return ConversationHandler.END
         odo = int(update.message.text.strip())
         prev = _get_last_odometer()
         diff = odo - prev if prev else 0
-        user_data_store[update.effective_user.id] = {"odometer": odo, "diff": diff}
+        user_data_store[user_id] = {"odometer": odo, "diff": diff}
         await update.message.reply_text(f"Введи розподіл: місто, район, траса (сума = {diff})")
         logger.info(f"Одометр введено: {odo}, різниця: {diff}")
         context.user_data["state"] = WAITING_FOR_DISTRIBUTION
@@ -358,6 +367,8 @@ async def handle_odometer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return WAITING_FOR_ODOMETER
     except Exception as e:
         logger.error(f"Помилка обробки одометра: {e}", exc_info=True)
+        context.user_data.clear()
+        user_data_store.pop(user_id, None)
         await update.message.reply_text("🚫 Помилка. Спробуй /start.")
         return ConversationHandler.END
 
@@ -366,9 +377,16 @@ async def handle_distribution(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = update.effective_user.id
     logger.debug(f"Обробка розподілу: {update.message.text} від користувача {user_id}, стан: {context.user_data.get('state')}")
     try:
+        if context.user_data.get("state") != WAITING_FOR_DISTRIBUTION:
+            logger.warning(f"Невірний стан для розподілу: {context.user_data.get('state')}")
+            context.user_data.clear()
+            user_data_store.pop(user_id, None)
+            await update.message.reply_text("🚫 Почни з /start або натисни 'Додати запис'.")
+            return ConversationHandler.END
         data = user_data_store.get(user_id)
         if not data:
             logger.error("Немає даних користувача для розподілу")
+            context.user_data.clear()
             await update.message.reply_text("🚫 Помилка. Почни з /start.")
             return ConversationHandler.END
         parsed = _parse_distribution(update.message.text, data["diff"])
@@ -388,6 +406,8 @@ async def handle_distribution(update: Update, context: ContextTypes.DEFAULT_TYPE
         return CONFIRM
     except Exception as e:
         logger.error(f"Помилка обробки розподілу: {e}", exc_info=True)
+        context.user_data.clear()
+        user_data_store.pop(user_id, None)
         await update.message.reply_text("🚫 Помилка. Спробуй /start.")
         return ConversationHandler.END
 
@@ -396,9 +416,16 @@ async def confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     logger.debug(f"Підтвердження збереження від користувача {user_id}, стан: {context.user_data.get('state')}")
     try:
+        if context.user_data.get("state") != CONFIRM:
+            logger.warning(f"Невірний стан для підтвердження: {context.user_data.get('state')}")
+            context.user_data.clear()
+            user_data_store.pop(user_id, None)
+            await update.message.reply_text("🚫 Почни з /start або натисни 'Додати запис'.")
+            return ConversationHandler.END
         d = user_data_store.pop(user_id, None)
         if not d:
             logger.error("Немає даних для збереження")
+            context.user_data.clear()
             await update.message.reply_text("🚫 Помилка. Почни з /start.")
             return ConversationHandler.END
         now = datetime.now(tz)
@@ -415,6 +442,8 @@ async def confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     except Exception as e:
         logger.error(f"Помилка збереження: {e}", exc_info=True)
+        context.user_data.clear()
+        user_data_store.pop(user_id, None)
         await update.message.reply_text("🚫 Помилка. Спробуй /start.")
         return ConversationHandler.END
 
@@ -460,7 +489,6 @@ async def telegram_ping():
             await asyncio.sleep(5)
 
 
-# APP
 async def check_webhook():
     logger.debug("Перевірка стану вебхука")
     try:
@@ -476,10 +504,18 @@ async def check_webhook():
                         json={"url": webhook_url, "drop_pending_updates": True}
                     ) as set_resp:
                         logger.info(f"Вебхук встановлено: {await set_resp.json()}")
+                elif data.get("result", {}).get("pending_update_count", 0) > 0:
+                    logger.warning(f"Знайдено {data['result']['pending_update_count']} необроблених оновлень, очищаємо")
+                    async with session.post(
+                        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook",
+                        json={"url": data["result"]["url"], "drop_pending_updates": True}
+                    ) as set_resp:
+                        logger.info(f"Очищено оновлення: {await set_resp.json()}")
     except Exception as e:
         logger.error(f"Помилка перевірки вебхука: {e}", exc_info=True)
 
 
+# APP
 async def init_telegram_app():
     global telegram_app
     logger.info("Починаємо ініціалізацію Telegram Application")
@@ -506,14 +542,22 @@ async def init_telegram_app():
         telegram_app.add_error_handler(error_handler)
         await telegram_app.initialize()
         await telegram_app.start()
-        await check_webhook()  # Перевіряємо та встановлюємо вебхук
+        await check_webhook()  # Перевіряємо та очищаємо оновлення
         asyncio.create_task(keep_alive())
         asyncio.create_task(telegram_ping())
+        asyncio.create_task(periodic_webhook_check())  # Періодична перевірка
         logger.info("Telegram app ініціалізовано та запущено")
     except Exception as e:
         logger.error(f"Помилка ініціалізації Telegram Application: {e}", exc_info=True)
         telegram_app = None
         raise
+
+
+async def periodic_webhook_check():
+    logger.debug("Запускаємо періодичну перевірку вебхука")
+    while True:
+        await check_webhook()
+        await asyncio.sleep(60)
 
 
 async def shutdown_telegram_app():
