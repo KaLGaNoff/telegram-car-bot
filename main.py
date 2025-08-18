@@ -295,6 +295,7 @@ async def init_telegram_app():
                 CONFIRM: [MessageHandler(filters.TEXT, confirm_save)]
             },
             fallbacks=[],
+            per_message=True,  # Додано для прибирання PTBUserWarning
         )
         telegram_app.add_handler(conv)
         logger.info("Обробники додано успішно")
@@ -318,14 +319,25 @@ async def shutdown_telegram_app():
     logger.debug("Завершення роботи telegram_app")
     if telegram_app:
         logger.debug("Видаляємо вебхук")
-        await telegram_app.bot.delete_webhook()
-        logger.info("Вебхук видалено")
+        try:
+            await telegram_app.bot.delete_webhook()
+            logger.info("Вебхук видалено")
+        except Exception as e:
+            logger.error(f"Помилка видалення вебхука: {e}", exc_info=True)
         logger.debug("Зупиняємо telegram_app")
-        await telegram_app.stop()
-        logger.info("telegram_app зупинено")
+        try:
+            await telegram_app.stop()
+            logger.info("telegram_app зупинено")
+        except Exception as e:
+            logger.error(f"Помилка зупинки telegram_app: {e}", exc_info=True)
         logger.debug("Завершуємо telegram_app")
-        await telegram_app.shutdown()
-        logger.info("telegram_app завершено")
+        try:
+            await telegram_app.shutdown()
+            logger.info("telegram_app завершено")
+        except Exception as e:
+            logger.error(f"Помилка завершення telegram_app: {e}", exc_info=True)
+    else:
+        logger.warning("telegram_app не ініціалізовано, пропускаємо завершення")
 
 
 async def home(request: Request):
@@ -338,11 +350,15 @@ async def webhook(request: Request):
     if not telegram_app:
         logger.error("Telegram Application не ініціалізовано")
         return Response(status_code=500)
-    data = await request.json()
-    update = Update.de_json(data, bot=telegram_app.bot)
-    await telegram_app.process_update(update)
-    logger.info("Вебхук оброблено успішно")
-    return Response(status_code=200)
+    try:
+        data = await request.json()
+        update = Update.de_json(data, bot=telegram_app.bot)
+        await telegram_app.process_update(update)
+        logger.info("Вебхук оброблено успішно")
+        return Response(status_code=200)
+    except Exception as e:
+        logger.error(f"Помилка обробки вебхука: {e}", exc_info=True)
+        return Response(status_code=500)
 
 
 routes = [Route("/", home), Route("/webhook", webhook, methods=["POST"])]
