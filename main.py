@@ -1,3 +1,4 @@
+```python
 import os
 import re
 import json
@@ -291,6 +292,20 @@ async def keep_alive():
             await asyncio.sleep(30)  # Пінг кожні 30 секунд
 
 
+async def telegram_ping():
+    logger.debug("Запускаємо telegram_ping для підтримки активності")
+    async with aiohttp.ClientSession() as session:
+        while True:
+            try:
+                async with session.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getMe") as resp:
+                    logger.debug(f"telegram_ping: статус {resp.status}")
+                    if resp.status != 200:
+                        logger.error(f"telegram_ping неуспішний: статус {resp.status}")
+            except Exception as e:
+                logger.error(f"Помилка telegram_ping: {e}")
+            await asyncio.sleep(15)  # Пінг кожні 15 секунд
+
+
 # =========================
 # APP
 # =========================
@@ -329,9 +344,10 @@ async def init_telegram_app():
         logger.debug(f"Встановлюємо вебхук: {webhook_url}")
         await telegram_app.bot.set_webhook(webhook_url, drop_pending_updates=True)
         logger.info(f"Webhook успішно встановлено: {webhook_url}")
-        # Запускаємо keep_alive
+        # Запускаємо keep_alive і telegram_ping
         asyncio.create_task(keep_alive())
-        logger.info("keep_alive завдання запущено")
+        asyncio.create_task(telegram_ping())
+        logger.info("keep_alive та telegram_ping завдання запущено")
     except Exception as e:
         logger.error(f"Помилка ініціалізації Telegram Application: {e}", exc_info=True)
         telegram_app = None
@@ -390,3 +406,4 @@ async def webhook(request: Request):
 
 routes = [Route("/", home), Route("/webhook", webhook, methods=["POST"])]
 app = Starlette(routes=routes, on_startup=[init_telegram_app], on_shutdown=[shutdown_telegram_app])
+```
