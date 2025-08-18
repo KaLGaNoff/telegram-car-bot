@@ -8,3 +8,4 @@ fastapi==0.111.0
 starlette==0.37.2
 setuptools<81
 httpx~=0.25.2
+aiohttp==3.10.5
