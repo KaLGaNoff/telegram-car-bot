@@ -211,13 +211,13 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         stats_text = (
             f"📊 *Детальна статистика*\n\n"
-            f"📏 *Загальний пробіг:* {stats_data['total_distance']:.1f} км\n"
+            f"📏 *Загальний пробіг:* {stats_data['total_distance']:.0f} км\n"
             f"📅 *Днів з записами:* {stats_data['days_count']}\n"
             f"📈 *Середньодобовий пробіг:* {avg_daily:.1f} км\n\n"
             f"⛽ *Розподіл за типами доріг:*\n"
-            f"🏙 *Місто:* {stats_data['city_km']:.1f} км ({stats_data['city_percent']:.1f}%) {generate_progress_bar(stats_data['city_percent'])}\n"
-            f"🌳 *Район:* {stats_data['district_km']:.1f} км ({stats_data['district_percent']:.1f}%) {generate_progress_bar(stats_data['district_percent'])}\n"
-            f"🛣 *Траса:* {stats_data['highway_km']:.1f} км ({stats_data['highway_percent']:.1f}%) {generate_progress_bar(stats_data['highway_percent'])}\n\n"
+            f"🏙 *Місто:* {stats_data['city_km']:.0f} км ({stats_data['city_percent']:.1f}%) {generate_progress_bar(stats_data['city_percent'])}\n"
+            f"🌳 *Район:* {stats_data['district_km']:.0f} км ({stats_data['district_percent']:.1f}%) {generate_progress_bar(stats_data['district_percent'])}\n"
+            f"🛣 *Траса:* {stats_data['highway_km']:.0f} км ({stats_data['highway_percent']:.1f}%) {generate_progress_bar(stats_data['highway_percent'])}\n\n"
             f"🔋 *Витрати палива:*\n"
             f"• Місто: {stats_data['city_fuel']:.1f} л\n"
             f"• Район: {stats_data['district_fuel']:.1f} л\n"
@@ -275,7 +275,7 @@ async def handle_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         report_text = (
             f"📋 *Звіт за останні 30 днів*\n\n"
             f"📅 Період: {month_ago.strftime('%d.%m')} - {today.strftime('%d.%m.%Y')}\n"
-            f"📊 Загальний пробіг: {monthly_distance:.1f} км\n"
+            f"📊 Загальний пробіг: {monthly_distance:.0f} км\n"
             f"⛽ Витрачено палива: {monthly_fuel:.1f} л\n"
             f"📈 Середня витрата: {avg_consumption:.1f} л/100км\n"
             f"📅 Днів з поїздками: {days_with_data}\n\n"
@@ -319,12 +319,12 @@ async def handle_last(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🧾 *Остання поїздка*\n\n"
             f"📅 Дата: {last_row[0] if last_row[0] not in ['#VALUE!', '#ERROR!'] else 'Невідомо'}\n"
             f"📏 Одометр: {last_odo:.0f} км\n"
-            f"🔄 Подолано: {last_distance:.1f} км\n"
+            f"🔄 Подолано: {last_distance:.0f} км\n"
             f"⛽ Витрачено: {last_fuel:.1f} л\n\n"
             f"🛣 *Розподіл:*\n"
-            f"• Місто: {city_km:.1f} км\n"
-            f"• Район: {district_km:.1f} км\n"
-            f"• Траса: {highway_km:.1f} км\n"
+            f"• Місто: {city_km:.0f} км\n"
+            f"• Район: {district_km:.0f} км\n"
+            f"• Траса: {highway_km:.0f} км\n"
         )
         
         if prev_row:
@@ -424,9 +424,9 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             f"📏 *Попередній одометр*: {prev_odo:.0f}\n"
             f"📍 *Поточний одометр*: {data['odometer']:.0f}\n"
-            f"🔄 *Пробіг за період*: {data['diff']:.1f} км\n\n"
+            f"🔄 *Пробіг за період*: {data['diff']:.0f} км\n\n"
             f"🛣 *Введи розподіл пробігу* (наприклад, *місто* {int(data['diff']/3)} *район* {int(data['diff']/3)} *траса* {int(data['diff']/3)}):\n"
-            f"ℹ️ Сума має дорівнювати {data['diff']:.1f} км.",
+            f"ℹ️ Сума має дорівнювати {data['diff']:.0f} км.",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="Markdown"
         )
@@ -467,7 +467,7 @@ async def handle_odometer(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("❌ Скасувати", callback_data="cancel")]
         ]
         await update.message.reply_text(
-            f"❗️ *Одометр має бути більший за попередній* ({prev_odo}).",
+            f"❗️ *Одометр має бути більший за попередній* ({prev_odo:.0f}).",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="Markdown"
         )
@@ -480,11 +480,11 @@ async def handle_odometer(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = [[InlineKeyboardButton("❌ Скасувати", callback_data="cancel")]]
     await update.message.reply_text(
-        f"📏 *Попередній одометр*: {prev_odo}\n"
+        f"📏 *Попередній одометр*: {prev_odo:.0f}\n"
         f"📍 *Поточний одометр*: {odometer}\n"
-        f"🔄 *Пробіг за період*: {diff} км\n\n"
+        f"🔄 *Пробіг за період*: {diff:.0f} км\n\n"
         f"🛣 *Введи розподіл пробігу* (наприклад, *місто* {int(diff/3)} *район* {int(diff/3)} *траса* {int(diff/3)}):\n"
-        f"ℹ️ Сума має дорівнювати {diff} км.",
+        f"ℹ️ Сума має дорівнювати {diff:.0f} км.",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
     )
@@ -567,7 +567,7 @@ async def handle_distribution(update: Update, context: ContextTypes.DEFAULT_TYPE
     text = (
         f"📋 *Новий запис*:\n"
         f"📏 *Одометр*: {data['odometer']} км\n"
-        f"🔄 *Пробіг*: {data['diff']} км\n"
+        f"🔄 *Пробіг*: {data['diff']:.0f} км\n"
         f"🏙 *Місто*: {int(city_km)} км → {c_exact} л (≈ {c_rounded})\n"
         f"🌳 *Район*: {int(district_km)} км → {d_exact} л (≈ {d_rounded})\n"
         f"🛣 *Траса*: {int(highway_km)} км → {h_exact} л (≈ {h_rounded})\n"
@@ -612,8 +612,8 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     row = [
         today,
-        str(data.get("odometer", "")),
-        str(data.get("diff", "")),
+        str(int(data.get("odometer", 0))),
+        str(int(data.get("diff", 0))),
         str(int(data.get("city_km", 0))),
         str(data.get("city_exact", 0)).replace('.', ','),
         str(data.get("city_rounded", 0)),
@@ -638,7 +638,7 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
         
         await query.edit_message_text(
             f"✅ *Запис збережено!* 🎉\n"
-            f"📅 {today} | 📏 {data['odometer']} км | 🔄 {data['diff']} км | ⛽ {data['total_exact']} л",
+            f"📅 {today} | 📏 {int(data['odometer'])} км | 🔄 {int(data['diff'])} км | ⛽ {data['total_exact']} л",
             parse_mode="Markdown"
         )
         logger.info(f"Користувач {user_id} зберіг запис: {row} за {time.time() - start_time:.3f} сек")
