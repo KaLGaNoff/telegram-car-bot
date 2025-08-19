@@ -16,6 +16,7 @@ from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, MessageHandler,
     filters, ContextTypes, ConversationHandler
 )
+from gspread_formatting import CellFormat, TextFormat, Borders, format_cell_range
 
 # Придушення PTBUserWarning
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -46,7 +47,7 @@ RENDER_PORT = os.getenv("PORT", "10000")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
 if not all([TELEGRAM_TOKEN, GOOGLE_SHEET_ID, SERVICE_ACCOUNT_JSON, WEBHOOK_URL]):
-    logger.error("Відсутні обов'язкові змінні оtoчення")
+    logger.error("Відсутні обов'язкові змінні оточення")
     raise ValueError("Відсутні обов'язкові змінні оточення")
 
 # Ініціалізація Google Sheets
@@ -101,6 +102,24 @@ def safe_float_conversion(value, default=0):
         return float(str(value).replace(',', '.'))
     except (ValueError, TypeError):
         return default
+
+def format_new_row(row_index):
+    """Форматує новий рядок у таблиці"""
+    try:
+        cell_format = CellFormat(
+            horizontalAlignment='CENTER',
+            textFormat=TextFormat(bold=False, fontSize=10),
+            borders=Borders(
+                top={'style': 'SOLID', 'width': 1},
+                bottom={'style': 'SOLID', 'width': 1},
+                left={'style': 'SOLID', 'width': 1},
+                right={'style': 'SOLID', 'width': 1}
+            )
+        )
+        format_cell_range(sheet, f"A{row_index}:N{row_index}", cell_format)
+        logger.info(f"Відформатовано рядок {row_index}")
+    except Exception as e:
+        logger.error(f"Помилка форматування рядка: {e}")
 
 def calculate_statistics():
     """Розраховує статистику на основі даних з таблиці"""
@@ -262,7 +281,6 @@ async def handle_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📅 Днів з поїздками: {days_with_data}\n\n"
             f"🏆 *Показники ефективності:*\n"
             f"• Щоденний пробіг: {monthly_distance/30:.1f} км/день\n"
-            f"• Витрати на паливо: ~{monthly_fuel * 54:.0f} грн\n"
             f"• Ефективність: {'🟢' if avg_consumption < 11 else '🟡' if avg_consumption < 13 else '🔴'}"
         )
         
@@ -612,7 +630,12 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         start_time = time.time()
         sheet.append_row(row)
+        row_index = len(sheet_cache) + 1  # Новий рядок
         update_sheet_cache()
+        
+        # Форматуємо новий рядок
+        format_new_row(row_index)
+        
         await query.edit_message_text(
             f"✅ *Запис збережено!* 🎉\n"
             f"📅 {today} | 📏 {data['odometer']} км | 🔄 {data['diff']} км | ⛽ {data['total_exact']} л",
