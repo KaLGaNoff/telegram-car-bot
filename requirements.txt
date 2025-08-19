@@ -3,4 +3,4 @@ gspread==6.1.2
 gspread-formatting==1.1.2
 google-auth==2.35.0
 pytz==2025.2
-aiohttp==3.9.5
+flask==3.0.3
