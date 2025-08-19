@@ -6,21 +6,14 @@ import warnings
 import gspread
 from datetime import datetime, timedelta
 import pytz
-from flask import Flask, request
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler, MessageHandler,
-    filters, ContextTypes, ConversationHandler
-)
-from gspread_formatting import CellFormat, TextFormat, Borders, format_cell_range
-import telegram
-from logging.handlers import TimedRotatingFileHandler
 import threading
 import asyncio
 from queue import Queue
+import requests
+from flask import Flask, request
 
 # Придушення PTBUserWarning
-warnings.filterwarnings("ignore", category=telegram.warnings.PTBUserWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
 
 # Налаштування логування
 logger = logging.getLogger(__name__)
@@ -30,26 +23,14 @@ class FaviconFilter(logging.Filter):
     def filter(self, record):
         return '/favicon' not in record.getMessage()
 
-log_handler = TimedRotatingFileHandler(
-    filename="bot.log",
-    when="midnight",
-    interval=1,
-    backupCount=7
-)
+log_handler = logging.StreamHandler()
 log_handler.setFormatter(logging.Formatter(
     "%(asctime)s - %(levelname)s - %(message)s"
 ))
 log_handler.addFilter(FaviconFilter())
 logger.addHandler(log_handler)
 
-console_handler = logging.StreamHandler()
-console_handler.setFormatter(logging.Formatter(
-    "%(asctime)s - %(levelname)s - %(message)s"
-))
-console_handler.addFilter(FaviconFilter())
-logger.addHandler(console_handler)
-
-logger.info(f"Версія python-telegram-bot: {telegram.__version__}")
+logger.info("Бот запускається...")
 
 # Змінні оточення
 OWNER_ID = 270380991
@@ -98,11 +79,18 @@ update_queue = Queue()
 # Створюємо Flask додаток
 app = Flask(__name__)
 
+# Імпортуємо Telegram компоненти після ініціалізації Flask
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application, CommandHandler, CallbackQueryHandler, MessageHandler,
+    filters, ContextTypes, ConversationHandler
+)
+
 # Створюємо Application для бота
 application = Application.builder().token(TELEGRAM_TOKEN).build()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info(f"Отримано команду /start від користувача {update.effective_user.id} о {datetime.now(pytz.timezone('Europe/Kiev')).strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
+    logger.info(f"Отримано команду /start від користувача {update.effective_user.id}")
     if update.effective_user.id != OWNER_ID:
         await update.message.reply_text("❌ *У тебе немає доступу до цього бота.*", parse_mode="Markdown")
         logger.warning(f"Несанкціонований доступ: {update.effective_user.id}")
@@ -122,7 +110,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Користувач {update.effective_user.id} запустив бота")
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info(f"Отримано команду /stats від користувача {update.effective_user.id} о {datetime.now(pytz.timezone('Europe/Kiev')).strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
+    logger.info(f"Отримано команду /stats від користувача {update.effective_user.id}")
     if update.effective_user.id != OWNER_ID:
         await update.message.reply_text("❌ *У тебе немає доступу.*", parse_mode="Markdown")
         logger.warning(f"Несанкціонований доступ до /stats: {update.effective_user.id}")
@@ -196,7 +184,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    logger.info(f"Отримано callback: {query.data} від користувача {query.from_user.id} о {datetime.now(pytz.timezone('Europe/Kiev')).strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
+    logger.info(f"Отримано callback: {query.data} від користувача {query.from_user.id}")
 
     if query.from_user.id != OWNER_ID:
         await query.edit_message_text("❌ *У тебе немає доступу.*", parse_mode="Markdown")
@@ -353,7 +341,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return WAITING_FOR_DISTRIBUTION
 
 async def handle_odometer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info(f"Отримано введення одометра від користувача {update.effective_user.id}: {update.message.text} о {datetime.now(pytz.timezone('Europe/Kiev')).strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
+    logger.info(f"Отримано введення одометра від користувача {update.effective_user.id}: {update.message.text}")
     if update.effective_user.id != OWNER_ID:
         await update.message.reply_text("❌ *У тебе немає доступу.*", parse_mode="Markdown")
         logger.warning(f"Несанкціонований доступ до одометра: {update.effective_user.id}")
@@ -412,7 +400,7 @@ async def handle_odometer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return WAITING_FOR_DISTRIBUTION
 
 async def handle_distribution(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info(f"Отримано розподіл пробігу від користувача {update.effective_user.id}: {update.message.text} о {datetime.now(pytz.timezone('Europe/Kiev')).strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
+    logger.info(f"Отримано розподіл пробігу від користувача {update.effective_user.id}: {update.message.text}")
     if update.effective_user.id != OWNER_ID:
         await update.message.reply_text("❌ *У тебе немає доступу.*", parse_mode="Markdown")
         logger.warning(f"Несанкціонований доступ до розподілу: {update.effective_user.id}")
@@ -436,7 +424,7 @@ async def handle_distribution(update: Update, context: ContextTypes.DEFAULT_TYPE
             elif "район" in word:
                 next_value = text.split(word)[1].strip().split()[0]
                 district_km = float(next_value)
-            elif "трас" in word:
+            elif " трас" in word:
                 next_value = text.split(word)[1].strip().split()[0]
                 highway_km = float(next_value)
     except (IndexError, ValueError):
@@ -459,7 +447,7 @@ async def handle_distribution(update: Update, context: ContextTypes.DEFAULT_TYPE
         ]
         await update.message.reply_text(
             f"⚠️ *Сума ({total_entered}) не збігається з пробігом ({data['diff']}).* Виправ.\n"
-            f"Введи, наприклад: *місто* {int(data['diff']/3)} *район* {int(data['diff']/3)} *траса* {int(data['diff']/3)}",
+            f"Введи, наприклад: *місто* {int(data['diff']/3)} *район* {int(data['diff']/3)} * траса* {int(data['diff']/3)}",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="Markdown"
         )
@@ -507,7 +495,7 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-    logger.info(f"Отримано підтвердження: {query.data} від користувача {user_id} о {datetime.now(pytz.timezone('Europe/Kiev')).strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
+    logger.info(f"Отримано підтвердження: {query.data} від користувача {user_id}")
 
     if query.from_user.id != OWNER_ID:
         await query.edit_message_text("❌ *У тебе немає доступу.*", parse_mode="Markdown")
@@ -551,17 +539,6 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
         start_time = time.time()
         sheet.append_row(row)
         row_index = len(sheet_cache) + 1
-        cell_format = CellFormat(
-            horizontalAlignment='CENTER',
-            textFormat=TextFormat(bold=False),
-            borders=Borders(
-                top={'style': 'SOLID'},
-                bottom={'style': 'SOLID'},
-                left={'style': 'SOLID'},
-                right={'style': 'SOLID'}
-            )
-        )
-        format_cell_range(sheet, f"A{row_index}:N{row_index}", cell_format)
         update_sheet_cache()
         await query.edit_message_text(
             f"✅ *Запис збережено!* 🎉\n"
@@ -580,7 +557,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-    logger.info(f"Отримано скасування від користувача {user_id} о {datetime.now(pytz.timezone('Europe/Kiev')).strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
+    logger.info(f"Отримано скасування від користувача {user_id}")
     user_data_store.pop(user_id, None)
     await query.edit_message_text("❌ *Операцію скасовано.*", parse_mode="Markdown")
     logger.info(f"Користувач {user_id} скасував операцію")
@@ -610,6 +587,7 @@ def webhook():
     try:
         update = Update.de_json(request.get_json(), application.bot)
         update_queue.put(update)
+        logger.info(f"Отримано оновлення: {update.update_id}")
         return 'ok'
     except Exception as e:
         logger.error(f"Помилка обробки вебхука: {e}")
@@ -625,13 +603,32 @@ def health():
 def favicon():
     return '', 204
 
+# Головна сторінка
+@app.route('/')
+def index():
+    return 'Telegram Bot is running!'
+
+def set_webhook():
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook"
+        webhook_url = f"{WEBHOOK_URL}/webhook"
+        response = requests.post(url, data={'url': webhook_url})
+        if response.status_code == 200:
+            logger.info(f"Вебхук встановлено: {webhook_url}")
+        else:
+            logger.error(f"Помилка встановлення вебхука: {response.text}")
+    except Exception as e:
+        logger.error(f"Помилка при спробі встановлення вебхука: {e}")
+
 async def process_updates():
     while True:
-        update = update_queue.get()
-        try:
-            await application.process_update(update)
-        except Exception as e:
-            logger.error(f"Помилка обробки оновлення: {e}")
+        if not update_queue.empty():
+            update = update_queue.get()
+            try:
+                await application.process_update(update)
+            except Exception as e:
+                logger.error(f"Помилка обробки оновлення: {e}")
+        await asyncio.sleep(0.1)
 
 def run_bot():
     loop = asyncio.new_event_loop()
@@ -639,11 +636,21 @@ def run_bot():
     loop.run_until_complete(application.initialize())
     loop.run_until_complete(application.start())
     loop.create_task(process_updates())
-    loop.run_forever()
+    try:
+        loop.run_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        loop.run_until_complete(application.stop())
+        loop.close()
 
 if __name__ == '__main__':
+    # Встановлюємо вебхук
+    set_webhook()
+    
     # Запускаємо бота в окремому потоці
     t = threading.Thread(target=run_bot, daemon=True)
     t.start()
+    
     # Запускаємо Flask
-    app.run(host='0.0.0.0', port=int(RENDER_PORT))
+    app.run(host='0.0.0.0', port=int(RENDER_PORT), debug=False)
