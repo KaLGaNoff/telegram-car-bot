@@ -6,17 +6,18 @@ import warnings
 import gspread
 from datetime import datetime, timedelta
 import pytz
-import asyncio
-from aiohttp import web
+from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler,
+    Application, CommandHandler, CallbackQueryHandler, MessageHandler,
     filters, ContextTypes, ConversationHandler
 )
 from gspread_formatting import CellFormat, TextFormat, Borders, format_cell_range
 import telegram
 from logging.handlers import TimedRotatingFileHandler
-from telegram.ext._application import TelegramRequestHandler
+import threading
+import asyncio
+from queue import Queue
 
 # Придушення PTBUserWarning
 warnings.filterwarnings("ignore", category=telegram.warnings.PTBUserWarning)
@@ -59,8 +60,8 @@ RENDER_PORT = os.getenv("PORT", "10000")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
 if not all([TELEGRAM_TOKEN, GOOGLE_SHEET_ID, SERVICE_ACCOUNT_JSON, WEBHOOK_URL]):
-    logger.error("Відсутні обов’язкові змінні оточення")
-    raise ValueError("Відсутні обов’язкові змінні оточення")
+    logger.error("Відсутні обов'язкові змінні оточення")
+    raise ValueError("Відсутні обов'язкові змінні оточення")
 
 # Ініціалізація Google Sheets
 try:
@@ -90,6 +91,15 @@ update_sheet_cache()
 # Стани для ConversationHandler
 WAITING_FOR_ODOMETER, WAITING_FOR_DISTRIBUTION, CONFIRMATION = range(3)
 user_data_store = {}
+
+# Черга для оновлень
+update_queue = Queue()
+
+# Створюємо Flask додаток
+app = Flask(__name__)
+
+# Створюємо Application для бота
+application = Application.builder().token(TELEGRAM_TOKEN).build()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Отримано команду /start від користувача {update.effective_user.id} о {datetime.now(pytz.timezone('Europe/Kiev')).strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
@@ -576,71 +586,64 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Користувач {user_id} скасував операцію")
     return ConversationHandler.END
 
-async def health_handler(request):
-    return web.Response(text="OK")
+# Додаємо обробники до application
+conv_handler = ConversationHandler(
+    entry_points=[CallbackQueryHandler(handle_button)],
+    states={
+        WAITING_FOR_ODOMETER: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_odometer)],
+        WAITING_FOR_DISTRIBUTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_distribution)],
+        CONFIRMATION: [CallbackQueryHandler(handle_confirmation)]
+    },
+    fallbacks=[CallbackQueryHandler(cancel, pattern="^cancel$")],
+    per_user=True,
+    per_chat=True,
+    per_message=False
+)
 
-async def main():
-    # Створюємо додаток Telegram
-    application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+application.add_handler(CommandHandler("start", start))
+application.add_handler(CommandHandler("stats", stats))
+application.add_handler(conv_handler)
 
-    # Додаємо обробники
-    conv_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(handle_button)],
-        states={
-            WAITING_FOR_ODOMETER: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_odometer)],
-            WAITING_FOR_DISTRIBUTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_distribution)],
-            CONFIRMATION: [CallbackQueryHandler(handle_confirmation)]
-        },
-        fallbacks=[CallbackQueryHandler(cancel, pattern="^cancel$")],
-        per_user=True,
-        per_chat=True,
-        per_message=False
-    )
-
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("stats", stats))
-    application.add_handler(conv_handler)
-
-    # Налаштування вебхука
-    await application.bot.set_webhook(
-        url=f"{WEBHOOK_URL}/webhook",
-        allowed_updates=Update.ALL_TYPES
-    )
-    logger.info(f"Вебхук встановлено на {WEBHOOK_URL}/webhook")
-
-    # Створюємо HTTP-сервер
-    app = web.Application()
-    
-    # Додаємо обробник для вебхука Telegram
-    app.router.add_post("/webhook", TelegramRequestHandler(application))
-    
-    # Додаємо health check
-    app.router.add_get("/health", health_handler)
-    
-    # Обробник для favicon (щоб уникнути 404 помилок)
-    app.router.add_get("/favicon.ico", lambda r: web.Response(status=204))
-    app.router.add_get("/favicon.png", lambda r: web.Response(status=204))
-    
-    # Запускаємо сервер
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", int(RENDER_PORT))
-    await site.start()
-
-    logger.info(f"Бот запущено на порті {RENDER_PORT}")
-    logger.info(f"Health check доступний за адресою: /health")
-    logger.info(f"Вебхук: {WEBHOOK_URL}/webhook")
-
-    # Запускаємо бота у вічному циклі
-    while True:
-        await asyncio.sleep(3600)
-
-if __name__ == "__main__":
-    # Налаштування asyncio для Render
-    loop = asyncio.get_event_loop()
+# Маршрут для вебхука
+@app.route('/webhook', methods=['POST'])
+def webhook():
     try:
-        loop.run_until_complete(main())
-    except KeyboardInterrupt:
-        pass
-    finally:
-        loop.close()
+        update = Update.de_json(request.get_json(), application.bot)
+        update_queue.put(update)
+        return 'ok'
+    except Exception as e:
+        logger.error(f"Помилка обробки вебхука: {e}")
+        return 'error', 500
+
+# Маршрут для health check
+@app.route('/health')
+def health():
+    return 'OK'
+
+# Обробник для favicon
+@app.route('/favicon.ico')
+def favicon():
+    return '', 204
+
+async def process_updates():
+    while True:
+        update = update_queue.get()
+        try:
+            await application.process_update(update)
+        except Exception as e:
+            logger.error(f"Помилка обробки оновлення: {e}")
+
+def run_bot():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(application.initialize())
+    loop.run_until_complete(application.start())
+    loop.create_task(process_updates())
+    loop.run_forever()
+
+if __name__ == '__main__':
+    # Запускаємо бота в окремому потоці
+    t = threading.Thread(target=run_bot, daemon=True)
+    t.start()
+    # Запускаємо Flask
+    app.run(host='0.0.0.0', port=int(RENDER_PORT))
