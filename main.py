@@ -93,6 +93,15 @@ def generate_progress_bar(percent, width=10):
     filled = int(round(width * percent / 100))
     return "🟩" * filled + "⬜" * (width - filled)
 
+def safe_float_conversion(value, default=0):
+    """Безпечне перетворення в float з обробкою помилок"""
+    if not value or value in ['#VALUE!', '#ERROR!', '']:
+        return default
+    try:
+        return float(str(value).replace(',', '.'))
+    except (ValueError, TypeError):
+        return default
+
 def calculate_statistics():
     """Розраховує статистику на основі даних з таблиці"""
     if not sheet_cache or len(sheet_cache) <= 1:
@@ -106,16 +115,21 @@ def calculate_statistics():
     for row in sheet_cache[1:]:
         try:
             date_str = row[0]
+            if not date_str or date_str in ['#VALUE!', '#ERROR!']:
+                continue
+                
             days.add(date_str)
             
-            if row[2]: total_distance += float(row[2])
-            if row[3]: city_km += float(row[3])
-            if row[6]: district_km += float(row[6])
-            if row[9]: highway_km += float(row[9])
-            if row[4]: city_fuel += float(row[4].replace(',', '.'))
-            if row[7]: district_fuel += float(row[7].replace(',', '.'))
-            if row[10]: highway_fuel += float(row[10].replace(',', '.'))
-        except (ValueError, IndexError):
+            # Безпечне отримання значень
+            total_distance += safe_float_conversion(row[2])
+            city_km += safe_float_conversion(row[3])
+            district_km += safe_float_conversion(row[6])
+            highway_km += safe_float_conversion(row[9])
+            city_fuel += safe_float_conversion(row[4])
+            district_fuel += safe_float_conversion(row[7])
+            highway_fuel += safe_float_conversion(row[10])
+        except (ValueError, IndexError) as e:
+            logger.warning(f"Помилка обробки рядка {row}: {e}")
             continue
     
     total_km = city_km + district_km + highway_km
@@ -133,42 +147,43 @@ def calculate_statistics():
 
 # Функції обробники
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info(f"Отримано команду /start від користувача {update.effective_user.id}")
-    if update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("❌ *У тебе немає доступу до цього бота.*", parse_mode="Markdown")
-        logger.warning(f"Несанкціонований доступ: {update.effective_user.id}")
-        return
+    if update.message:
+        logger.info(f"Отримано команду /start від користувача {update.effective_user.id}")
+        if update.effective_user.id != OWNER_ID:
+            await update.message.reply_text("❌ *У тебе немає доступу до цього бота.*", parse_mode="Markdown")
+            logger.warning(f"Несанкціонований доступ: {update.effective_user.id}")
+            return
 
-    keyboard = [
-        [InlineKeyboardButton("🟢 Додати пробіг", callback_data="add"), InlineKeyboardButton("🔴 Видалити", callback_data="delete")],
-        [InlineKeyboardButton("📊 Звіт за місяць", callback_data="report"), InlineKeyboardButton("🧾 Остання поїздка", callback_data="last")],
-        [InlineKeyboardButton("📈 Статистика", callback_data="stats"), InlineKeyboardButton("♻️ Скинути", callback_data="reset")],
-        [InlineKeyboardButton("ℹ️ Допомога", callback_data="help")]
-    ]
-    await update.message.reply_text(
-        "🚗 *Вітаю у твоєму авто-боті!* 👋\nОбери дію нижче:",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="Markdown"
-    )
-    logger.info(f"Користувач {update.effective_user.id} запустив бота")
+        keyboard = [
+            [InlineKeyboardButton("🟢 Додати пробіг", callback_data="add"), InlineKeyboardButton("🔴 Видалити", callback_data="delete")],
+            [InlineKeyboardButton("📊 Звіт за місяць", callback_data="report"), InlineKeyboardButton("🧾 Остання поїздка", callback_data="last")],
+            [InlineKeyboardButton("📈 Статистика", callback_data="stats"), InlineKeyboardButton("♻️ Скинути", callback_data="reset")],
+            [InlineKeyboardButton("ℹ️ Допомога", callback_data="help")]
+        ]
+        await update.message.reply_text(
+            "🚗 *Вітаю у твоєму авто-боті!* 👋\nОбери дію нижче:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
+        logger.info(f"Користувач {update.effective_user.id} запустив бота")
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обробка команди /stats та кнопки статистики"""
     logger.info(f"Отримано запит на статистику від {update.effective_user.id}")
     
     if update.effective_user.id != OWNER_ID:
-        if hasattr(update, 'message'):
+        if hasattr(update, 'message') and update.message:
             await update.message.reply_text("❌ *У тебе немає доступу.*", parse_mode="Markdown")
-        else:
+        elif update.callback_query:
             await update.callback_query.edit_message_text("❌ *У тебе немає доступу.*", parse_mode="Markdown")
         return
 
     stats_data = calculate_statistics()
     if not stats_data:
         response = "📊 *Ще немає даних для статистики*"
-        if hasattr(update, 'message'):
+        if hasattr(update, 'message') and update.message:
             await update.message.reply_text(response, parse_mode="Markdown")
-        else:
+        elif update.callback_query:
             await update.callback_query.edit_message_text(response, parse_mode="Markdown")
         return
 
@@ -191,18 +206,18 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• Загалом: {stats_data['city_fuel'] + stats_data['district_fuel'] + stats_data['highway_fuel']:.1f} л"
         )
         
-        if hasattr(update, 'message'):
+        if hasattr(update, 'message') and update.message:
             await update.message.reply_text(stats_text, parse_mode="Markdown")
-        else:
+        elif update.callback_query:
             await update.callback_query.edit_message_text(stats_text, parse_mode="Markdown")
             
     except Exception as e:
         error_msg = "❌ *Помилка при отриманні статистики*"
-        if hasattr(update, 'message'):
-            await update.message.reply_text(error_msg, parse_mode="Markdown")
-        else:
-            await update.callback_query.edit_message_text(error_msg, parse_mode="Markdown")
         logger.error(f"Помилка статистики: {e}")
+        if hasattr(update, 'message') and update.message:
+            await update.message.reply_text(error_msg, parse_mode="Markdown")
+        elif update.callback_query:
+            await update.callback_query.edit_message_text(error_msg, parse_mode="Markdown")
 
 async def handle_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обробка кнопки звіту за місяць"""
@@ -225,10 +240,13 @@ async def handle_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         for row in sheet_cache[1:]:
             try:
+                if not row[0] or row[0] in ['#VALUE!', '#ERROR!']:
+                    continue
+                    
                 row_date = datetime.strptime(row[0], "%d.%m.%Y").replace(tzinfo=eest)
                 if row_date >= month_ago:
-                    if row[2]: monthly_distance += float(row[2])
-                    if row[12]: monthly_fuel += float(row[12].replace(',', '.'))
+                    monthly_distance += safe_float_conversion(row[2])
+                    monthly_fuel += safe_float_conversion(row[12])
                     days_with_data += 1
             except (ValueError, IndexError):
                 continue
@@ -271,23 +289,30 @@ async def handle_last(update: Update, context: ContextTypes.DEFAULT_TYPE):
         last_row = sheet_cache[-1]
         prev_row = sheet_cache[-2] if len(sheet_cache) >= 3 else None
         
+        # Безпечне отримання значень
+        last_odo = safe_float_conversion(last_row[1])
+        last_distance = safe_float_conversion(last_row[2])
+        last_fuel = safe_float_conversion(last_row[12])
+        city_km = safe_float_conversion(last_row[3])
+        district_km = safe_float_conversion(last_row[6])
+        highway_km = safe_float_conversion(last_row[9])
+        
         last_trip_text = (
             f"🧾 *Остання поїздка*\n\n"
-            f"📅 Дата: {last_row[0]}\n"
-            f"📏 Одометр: {last_row[1]} км\n"
-            f"🔄 Подолано: {last_row[2]} км\n"
-            f"⛽ Витрачено: {last_row[12]} л\n\n"
+            f"📅 Дата: {last_row[0] if last_row[0] not in ['#VALUE!', '#ERROR!'] else 'Невідомо'}\n"
+            f"📏 Одометр: {last_odo:.0f} км\n"
+            f"🔄 Подолано: {last_distance:.1f} км\n"
+            f"⛽ Витрачено: {last_fuel:.1f} л\n\n"
             f"🛣 *Розподіл:*\n"
-            f"• Місто: {last_row[3]} км\n"
-            f"• Район: {last_row[6]} км\n"
-            f"• Траса: {last_row[9]} км\n"
+            f"• Місто: {city_km:.1f} км\n"
+            f"• Район: {district_km:.1f} км\n"
+            f"• Траса: {highway_km:.1f} км\n"
         )
         
         if prev_row:
             try:
-                prev_odo = float(prev_row[1])
-                last_odo = float(last_row[1])
-                efficiency = "🟢 Краще" if (last_odo - prev_odo) > (float(prev_row[1]) - float(sheet_cache[-3][1])) else "🟡 Стабільно"
+                prev_odo = safe_float_conversion(prev_row[1])
+                efficiency = "🟢 Краще" if last_distance > (safe_float_conversion(prev_row[2]) if len(prev_row) > 2 else 0) else "🟡 Стабільно"
                 last_trip_text += f"\n📊 *Порівняння:* {efficiency}"
             except (ValueError, IndexError):
                 pass
@@ -298,8 +323,99 @@ async def handle_last(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ Помилка отримання даних")
         logger.error(f"Помилка останнього запису: {e}")
 
-# Решта функцій (handle_button, handle_odometer, handle_distribution, handle_confirmation, cancel) залишаються незмінними
-# [ВСТАВТЕ ТУТ РЕШТУ ФУНКЦІЙ З ПОПЕРЕДНЬОГО КОДУ]
+async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    logger.info(f"Отримано callback: {query.data} від користувача {query.from_user.id}")
+
+    if query.from_user.id != OWNER_ID:
+        await query.edit_message_text("❌ *У тебе немає доступу.*", parse_mode="Markdown")
+        logger.warning(f"Несанкціонований доступ до кнопки: {query.from_user.id}")
+        return
+
+    if query.data == "add":
+        keyboard = [[InlineKeyboardButton("❌ Скасувати", callback_data="cancel")]]
+        last_odo = safe_float_conversion(sheet_cache[-1][1]) if len(sheet_cache) >= 2 else None
+        last_odo_text = f"📍 *Твій останній одометр*: {last_odo:.0f}" if last_odo else "📍 *Це твій перший запис!*"
+        await query.edit_message_text(
+            f"{last_odo_text}\n\n📏 *Введи поточний одометр* (наприклад, `53200`):",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
+        return WAITING_FOR_ODOMETER
+
+    elif query.data == "delete":
+        if sheet_cache:
+            try:
+                start_time = time.time()
+                sheet.delete_rows(len(sheet_cache))
+                update_sheet_cache()
+                await query.edit_message_text("🗑 *Останній запис видалено!* ✅")
+                logger.info(f"Користувач {query.from_user.id} видалив останній запис за {time.time() - start_time:.3f} сек")
+            except Exception as e:
+                await query.edit_message_text(f"⚠️ *Помилка видалення*: {e}", parse_mode="Markdown")
+                logger.error(f"Помилка видалення запису: {e}")
+        else:
+            await query.edit_message_text("📈 *Таблиця порожня.* 😕", parse_mode="Markdown")
+
+    elif query.data == "report":
+        await handle_report(update, context)
+
+    elif query.data == "last":
+        await handle_last(update, context)
+
+    elif query.data == "stats":
+        await stats(update, context)
+
+    elif query.data == "reset":
+        user_data_store.pop(query.from_user.id, None)
+        await query.edit_message_text("♻️ *Дані скинуто!* ✅", parse_mode="Markdown")
+        logger.info(f"Користувач {query.from_user.id} скинув дані")
+
+    elif query.data == "help":
+        await query.edit_message_text(
+            "ℹ️ *Як користуватися ботом*:\n"
+            "1. Натисни 🟢 *Додати пробіг*.\n"
+            "2. Введи одометр (наприклад, `53200`).\n"
+            "3. Вкажи розподіл: *місто* 50 *район* 30 *траса* 6.\n"
+            "4. Сума має відповідати різниці одометра.\n"
+            "📈 *Статистика* покаже твої поїздки!",
+            parse_mode="Markdown"
+        )
+
+    elif query.data == "retry_odometer":
+        keyboard = [[InlineKeyboardButton("❌ Скасувати", callback_data="cancel")]]
+        last_odo = safe_float_conversion(sheet_cache[-1][1]) if len(sheet_cache) >= 2 else None
+        last_odo_text = f"📍 *Твій останній одометр*: {last_odo:.0f}" if last_odo else "📍 *Це твій перший запис!*"
+        await query.edit_message_text(
+            f"{last_odo_text}\n\n📏 *Введи поточний одометр* (наприклад, `53200`):",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
+        return WAITING_FOR_ODOMETER
+
+    elif query.data == "retry_distribution":
+        user_id = query.from_user.id
+        data = user_data_store.get(user_id, {})
+        if not data:
+            await query.edit_message_text("⚠️ *Дані загублено. Почни знову.*", parse_mode="Markdown")
+            logger.warning(f"Дані загублено для користувача {user_id}")
+            return ConversationHandler.END
+        prev_odo = safe_float_conversion(sheet_cache[-1][1]) if len(sheet_cache) >= 2 else 0
+        keyboard = [[InlineKeyboardButton("❌ Скасувати", callback_data="cancel")]]
+        await query.edit_message_text(
+            f"📏 *Попередній одометр*: {prev_odo:.0f}\n"
+            f"📍 *Поточний одометр*: {data['odometer']:.0f}\n"
+            f"🔄 *Пробіг за період*: {data['diff']:.1f} км\n\n"
+            f"🛣 *Введи розподіл пробігу* (наприклад, *місто* {int(data['diff']/3)} *район* {int(data['diff']/3)} *траса* {int(data['diff']/3)}):\n"
+            f"ℹ️ Сума має дорівнювати {data['diff']:.1f} км.",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
+        return WAITING_FOR_DISTRIBUTION
+
+# Решта функцій (handle_odometer, handle_distribution, handle_confirmation, cancel) залишаються незмінними
+# Але не забудьте додати safe_float_conversion там, де потрібно
 
 # Додаємо обробники до application
 conv_handler = ConversationHandler(
