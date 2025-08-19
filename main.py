@@ -55,7 +55,7 @@ OWNER_ID = 270380991
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
 SERVICE_ACCOUNT_JSON = os.getenv("SERVICE_ACCOUNT_JSON")
-RENDER_PORT = os.getenv("PORT", "8080")
+RENDER_PORT = os.getenv("PORT", "10000")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
 if not all([TELEGRAM_TOKEN, GOOGLE_SHEET_ID, SERVICE_ACCOUNT_JSON, WEBHOOK_URL]):
@@ -576,11 +576,11 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Користувач {user_id} скасував операцію")
     return ConversationHandler.END
 
-async def health_check(request):
+async def health_handler(request):
     return web.Response(text="OK")
 
 async def main():
-    # Створюємо додаток
+    # Створюємо додаток Telegram
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
     # Додаємо обробники
@@ -610,28 +610,37 @@ async def main():
 
     # Створюємо HTTP-сервер
     app = web.Application()
+    
+    # Додаємо обробник для вебхука Telegram
     app.router.add_post("/webhook", TelegramRequestHandler(application))
-    app.router.add_get("/health", health_check)
     
-    # Додаємо обробник для favicon.ico
-    async def favicon_handler(request):
-        return web.Response(status=204)
+    # Додаємо health check
+    app.router.add_get("/health", health_handler)
     
-    app.router.add_get("/favicon.ico", favicon_handler)
-    app.router.add_get("/favicon.png", favicon_handler)
-
+    # Обробник для favicon (щоб уникнути 404 помилок)
+    app.router.add_get("/favicon.ico", lambda r: web.Response(status=204))
+    app.router.add_get("/favicon.png", lambda r: web.Response(status=204))
+    
+    # Запускаємо сервер
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", RENDER_PORT)
+    site = web.TCPSite(runner, "0.0.0.0", int(RENDER_PORT))
     await site.start()
-    
+
     logger.info(f"Бот запущено на порті {RENDER_PORT}")
-    logger.info(f"URL вебхука: {WEBHOOK_URL}/webhook")
     logger.info(f"Health check доступний за адресою: /health")
-    
-    # Безкінечне очікування
+    logger.info(f"Вебхук: {WEBHOOK_URL}/webhook")
+
+    # Запускаємо бота у вічному циклі
     while True:
         await asyncio.sleep(3600)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Налаштування asyncio для Render
+    loop = asyncio.get_event_loop()
+    try:
+        loop.run_until_complete(main())
+    except KeyboardInterrupt:
+        pass
+    finally:
+        loop.close()
