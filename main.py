@@ -425,7 +425,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📏 *Попередній одометр*: {prev_odo:.0f}\n"
             f"📍 *Поточний одометр*: {data['odometer']:.0f}\n"
             f"🔄 *Пробіг за період*: {data['diff']:.0f} км\n\n"
-            f"🛣 *Введи розподіл пробігу* (наприклад, *місто* {int(data['diff']/3)} *район* {int(data['diff']/3)} *траса* {int(data['diff']/3)}):\n"
+            f"🛣 *Введи розподіл пробігу* \n(наприклад, *місто* {int(data['diff']/3)} *район* {int(data['diff']/3)} *траса* {int(data['diff']/3)}):\n"
             f"ℹ️ Сума має дорівнювати {data['diff']:.0f} км.",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="Markdown"
@@ -483,7 +483,7 @@ async def handle_odometer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📏 *Попередній одометр*: {prev_odo:.0f}\n"
         f"📍 *Поточний одометр*: {odometer}\n"
         f"🔄 *Пробіг за період*: {diff:.0f} км\n\n"
-        f"🛣 *Введи розподіл пробігу* (наприклад, *місто* {int(diff/3)} *район* {int(diff/3)} *траса* {int(diff/3)}):\n"
+        f"🛣 *Введи розподіл пробігу* \n(наприклад, *місто* {int(diff/3)} *район* {int(diff/3)} *траса* {int(diff/3)}):\n"
         f"ℹ️ Сума має дорівнювати {diff:.0f} км.",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
@@ -637,7 +637,7 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
         format_new_row(row_index)
         
         await query.edit_message_text(
-            f"✅ *Запис збережено!* 🎉\n"
+            f"✅ *Запис збережено!* 🎉\n\n"
             f"📅 {today} | 📏 {int(data['odometer'])} км | 🔄 {int(data['diff'])} км | ⛽ {data['total_exact']} л",
             parse_mode="Markdown"
         )
